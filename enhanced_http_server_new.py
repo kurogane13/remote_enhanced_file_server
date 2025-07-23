@@ -10,7 +10,7 @@ import socketserver
 import os
 import sys
 import json
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse, quote
 import mimetypes
 import time
 from collections import defaultdict
@@ -19,8 +19,15 @@ import socket
 import subprocess
 import uuid
 import datetime
+import threading
+import hashlib
+from http.server import ThreadingHTTPServer
 
 class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
+    """Enhanced HTTP handler with complete navigation and file information"""
+    
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.mpeg', '.mpg', '.m4v', '.3gp', '.ogv']
+    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.ico']
     
     def __init__(self, *args, **kwargs):
         # Setup comprehensive MIME types
@@ -29,36 +36,67 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
         mimetypes.add_type('text/css', '.css')
         mimetypes.add_type('application/javascript', '.js')
         mimetypes.add_type('application/json', '.json')
-        mimetypes.add_type('text/plain', '.log')
-        mimetypes.add_type('text/plain', '.txt')
-        mimetypes.add_type('text/x-shellscript', '.sh')
+        
+        # Video MIME types
+        for ext in self.video_extensions:
+            if ext == '.mp4' or ext == '.m4v':
+                mimetypes.add_type('video/mp4', ext)
+            elif ext == '.webm':
+                mimetypes.add_type('video/webm', ext)
+            elif ext == '.ogg' or ext == '.ogv':
+                mimetypes.add_type('video/ogg', ext)
+            elif ext == '.avi':
+                mimetypes.add_type('video/x-msvideo', ext)
+            elif ext == '.mov':
+                mimetypes.add_type('video/quicktime', ext)
+            elif ext == '.wmv':
+                mimetypes.add_type('video/x-ms-wmv', ext)
+            elif ext == '.flv':
+                mimetypes.add_type('video/x-flv', ext)
+            elif ext == '.mkv':
+                mimetypes.add_type('video/x-matroska', ext)
+            elif ext == '.3gp':
+                mimetypes.add_type('video/3gpp', ext)
+            elif ext in ['.mpeg', '.mpg']:
+                mimetypes.add_type('video/mpeg', ext)
+        
         super().__init__(*args, **kwargs)
     
     def do_GET(self):
-        """Handle GET requests with error handling and logging"""
+        """Handle GET requests with enhanced navigation"""
         try:
-            # Log the request type
-            if self.path == '/':
-                print(f"📁 Directory access: {self.path} (root)")
-            elif self.path.endswith('/'):
-                print(f"📁 Directory navigation: {self.path}")
-            elif '/' in self.path:
-                if any(self.path.lower().endswith(ext) for ext in ['.html', '.htm', '.txt', '.md', '.log', '.py', '.sh', '.json', '.csv']):
-                    print(f"👁️ File viewing: {self.path}")
-                else:
-                    print(f"⬇️ File download: {self.path}")
+            # Handle API requests
+            if self.path.startswith('/api/'):
+                self.handle_api_request()
+                return
+            
+            # Handle download requests
+            if self.path.startswith('/download/'):
+                self.handle_dedicated_download()
+                return
+            
+            # Handle video play requests
+            if self.path.startswith('/play/'):
+                self.handle_video_play()
+                return
+            
+            # Parse path for navigation
+            parsed_path = urlparse(self.path)
+            path = unquote(parsed_path.path)
+            
+            # Handle directory navigation
+            if path == '/' or path.endswith('/'):
+                self.generate_enhanced_directory_listing(path)
             else:
-                print(f"📄 File access: {self.path}")
-            
-            # Call the parent's do_GET method with error handling
-            super().do_GET()
-            
+                # Handle file requests
+                super().do_GET()
+                
         except Exception as e:
-            # Handle any exceptions gracefully
+            print(f"❌ Error in do_GET: {e}")
             try:
-                self.send_error(500, f"Internal server error")
+                self.send_error(500, "Internal server error")
             except:
-                pass  # If we can't even send an error, just continue
+                pass
     
     def end_headers(self):
         # Set proper content types and headers
@@ -104,8 +142,122 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
     
     def log_message(self, format, *args):
-        """Override to suppress default HTTP log messages"""
-        pass
+        """Custom logging"""
+        timestamp = time.strftime('%H:%M:%S')
+        print(f"[{timestamp}] {format % args}")
+
+    def find_file_by_name(self, filename):
+        """Find a file by name starting from the current directory tree"""
+        try:
+            current_dir = os.getcwd()
+            print(f"🔍 Searching for '{filename}' starting from: {current_dir}")
+            
+            # First check the current directory directly
+            direct_path = os.path.join(current_dir, filename)
+            if os.path.exists(direct_path):
+                return direct_path
+            
+            # Then search all subdirectories recursively
+            for root, dirs, files in os.walk(current_dir):
+                if filename in files:
+                    found_path = os.path.join(root, filename)
+                    return found_path
+        except Exception as e:
+            print(f"❌ Error in file search for '{filename}': {e}")
+            return None
+        
+        print(f"❌ File '{filename}' not found anywhere")
+        return None
+
+    def handle_api_request(self):
+        """Handle API requests"""
+        try:
+            if self.path == '/api/system':
+                system_info = self.get_system_info()
+                response = json.dumps(system_info, indent=2)
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(response.encode('utf-8'))))
+                self.end_headers()
+                self.wfile.write(response.encode('utf-8'))
+            else:
+                self.send_error(404, "API endpoint not found")
+        except Exception as e:
+            print(f"❌ API request error: {e}")
+            self.send_error(500, "Internal server error")
+
+    def handle_dedicated_download(self):
+        """Handle dedicated download requests using file search"""
+        try:
+            # Extract filename from /download/filename
+            filename = unquote(self.path[10:])  # Remove '/download/' prefix
+            print(f"🔍 Download request for: '{filename}'")
+            
+            # Find the file using recursive search
+            file_path = self.find_file_by_name(filename)
+            
+            if not file_path or not os.path.exists(file_path):
+                print(f"❌ File not found: {filename}")
+                self.send_error(404, f"File '{filename}' not found")
+                return
+            
+            print(f"✅ Found file: {file_path}")
+            
+            # Get file info
+            file_size = os.path.getsize(file_path)
+            
+            # Send file
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+            self.send_header('Content-Length', str(file_size))
+            self.end_headers()
+            
+            # Stream file in chunks
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    
+        except Exception as e:
+            print(f"❌ Download error: {e}")
+            self.send_error(500, "Download failed")
+
+    def handle_video_play(self):
+        """Handle video play requests"""
+        try:
+            # Extract filename from /play/filename
+            filename = unquote(self.path[6:])  # Remove '/play/' prefix
+            print(f"🎥 Video play request for: '{filename}'")
+            
+            # Find the file using recursive search
+            file_path = self.find_file_by_name(filename)
+            
+            if not file_path or not os.path.exists(file_path):
+                print(f"❌ Video file not found: {filename}")
+                self.send_error(404, f"Video '{filename}' not found")
+                return
+            
+            print(f"✅ Found video: {file_path}")
+            
+            # Serve the video file
+            super().do_GET()
+                    
+        except Exception as e:
+            print(f"❌ Video play error: {e}")
+            self.send_error(500, "Video play failed")
+
+    def generate_enhanced_directory_listing(self, path):
+        """Generate enhanced directory listing"""
+        try:
+            # Use the existing list_directory method
+            return self.list_directory('.' if path == '/' else path.lstrip('/'))
+        except Exception as e:
+            print(f"❌ Directory listing error: {e}")
+            self.send_error(500, "Directory listing failed")
     
     def get_file_category_and_extensions(self):
         """Define file categories with comprehensive extension mapping"""
@@ -257,22 +409,41 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                 system_info['memory_available'] = 'unavailable'
                 system_info['memory_used'] = 'unavailable'
             
-            # CPU information
+            # Enhanced CPU information
             try:
                 with open('/proc/cpuinfo', 'r') as f:
-                    cpu_count = 0
-                    cpu_model = 'unknown'
-                    for line in f:
-                        if line.startswith('processor'):
-                            cpu_count += 1
-                        elif line.startswith('model name'):
-                            cpu_model = line.split(':')[1].strip()
+                    cpu_info = {}
+                    processors = []
+                    current_proc = {}
                     
-                    system_info['cpu_count'] = cpu_count
-                    system_info['cpu_model'] = cpu_model
+                    for line in f:
+                        if line.strip() == '':
+                            if current_proc:
+                                processors.append(current_proc)
+                                current_proc = {}
+                        elif ':' in line:
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            current_proc[key] = value
+                    
+                    if current_proc:
+                        processors.append(current_proc)
+                    
+                    # Get CPU details
+                    system_info['cpu_count'] = len(processors)
+                    system_info['cpu_model'] = processors[0].get('model name', 'unknown') if processors else 'unknown'
+                    system_info['cpu_cores'] = processors[0].get('cpu cores', 'unknown') if processors else 'unknown' 
+                    system_info['cpu_threads'] = len(processors)
+                    system_info['cpu_cache_size'] = processors[0].get('cache size', 'unknown') if processors else 'unknown'
+                    system_info['cpu_flags'] = processors[0].get('flags', 'unknown')[:100] + '...' if processors and processors[0].get('flags') else 'unknown'
             except:
                 system_info['cpu_count'] = 'unavailable'
                 system_info['cpu_model'] = 'unavailable'
+                system_info['cpu_cores'] = 'unavailable'
+                system_info['cpu_threads'] = 'unavailable'
+                system_info['cpu_cache_size'] = 'unavailable'
+                system_info['cpu_flags'] = 'unavailable'
             
             # Load average
             try:
@@ -351,18 +522,35 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                         </div>
                     </div>
                     
-                    <!-- Hardware Info -->
+                    <!-- Enhanced CPU Info -->
                     <div style="background: #2d3748; border: 1px solid #4a5568; border-radius: 8px; padding: 16px;">
                         <h4 style="color: #ff8a65; margin: 0 0 12px 0; font-size: 1.1em; display: flex; align-items: center; gap: 8px;">
-                            <span>🔧</span> Hardware
+                            <span>🔧</span> CPU Details
                         </h4>
                         <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px; font-size: 0.9em;">
-                            <span style="color: #a0a0a0;">Machine:</span>
-                            <span style="color: #e6e6e6; font-weight: 500;">{system_info.get('machine', 'Unknown')}</span>
-                            <span style="color: #a0a0a0;">CPU Cores:</span>
-                            <span style="color: #e6e6e6;">{system_info.get('cpu_count', 'Unknown')}</span>
-                            <span style="color: #a0a0a0;">CPU Model:</span>
-                            <span style="color: #e6e6e6; font-size: 0.8em;">{system_info.get('cpu_model', 'Unknown')[:50]}{'...' if len(system_info.get('cpu_model', '')) > 50 else ''}</span>
+                            <span style="color: #a0a0a0;">Model:</span>
+                            <span style="color: #e6e6e6; font-weight: 500; font-size: 0.8em;">{system_info.get('cpu_model', 'Unknown')[:60]}{'...' if len(system_info.get('cpu_model', '')) > 60 else ''}</span>
+                            <span style="color: #a0a0a0;">Physical Cores:</span>
+                            <span style="color: #e6e6e6;">{system_info.get('cpu_cores', 'Unknown')}</span>
+                            <span style="color: #a0a0a0;">Logical Threads:</span>
+                            <span style="color: #e6e6e6;">{system_info.get('cpu_threads', 'Unknown')}</span>
+                            <span style="color: #a0a0a0;">Cache Size:</span>
+                            <span style="color: #e6e6e6; font-family: monospace; background: #1a202c; padding: 2px 6px; border-radius: 4px;">{system_info.get('cpu_cache_size', 'Unknown')}</span>
+                            <span style="color: #a0a0a0;">Architecture:</span>
+                            <span style="color: #e6e6e6;">{system_info.get('machine', 'Unknown')}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- System UUID -->
+                    <div style="background: #2d3748; border: 1px solid #4a5568; border-radius: 8px; padding: 16px;">
+                        <h4 style="color: #90caf9; margin: 0 0 12px 0; font-size: 1.1em; display: flex; align-items: center; gap: 8px;">
+                            <span>🆔</span> System Identity
+                        </h4>
+                        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px; font-size: 0.9em;">
+                            <span style="color: #a0a0a0;">Hostname:</span>
+                            <span style="color: #e6e6e6; font-weight: 500;">{system_info.get('hostname', 'Unknown')}</span>
+                            <span style="color: #a0a0a0;">FQDN:</span>
+                            <span style="color: #e6e6e6;">{system_info.get('fqdn', 'Unknown')}</span>
                             <span style="color: #a0a0a0;">System UUID:</span>
                             <span style="color: #e6e6e6; font-family: monospace; font-size: 0.8em; background: #1a202c; padding: 2px 6px; border-radius: 4px;">{system_info.get('system_uuid', 'Unknown')}</span>
                         </div>
@@ -1360,13 +1548,97 @@ def run_server(port=8081, directory=None):
     except Exception as e:
         print(f"❌ Error: {e}")
 
+def get_network_interface_ip():
+    """Get the IP address of the primary network interface (standalone function)"""
+    try:
+        import netifaces
+        
+        # Get list of interfaces
+        interfaces = netifaces.interfaces()
+        
+        # Priority order for interface types
+        interface_priorities = ['wlp', 'ens', 'enp', 'eth', 'wlan', 'em']
+        
+        for priority in interface_priorities:
+            for interface in interfaces:
+                if interface.startswith(priority):
+                    addresses = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addresses:
+                        ip = addresses[netifaces.AF_INET][0]['addr']
+                        if ip != '127.0.0.1':
+                            return ip, interface
+        
+        # Fallback to any non-loopback interface
+        for interface in interfaces:
+            if interface != 'lo':
+                try:
+                    addresses = netifaces.ifaddresses(interface)
+                    if netifaces.AF_INET in addresses:
+                        ip = addresses[netifaces.AF_INET][0]['addr']
+                        if ip != '127.0.0.1':
+                            return ip, interface
+                except:
+                    continue
+        
+    except ImportError:
+        # Fallback method without netifaces
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip, 'unknown'
+        except:
+            pass
+    
+    return 'unavailable', 'unknown'
 
-if __name__ == "__main__":
+def main():
+    """Main server function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Remote Advanced File Browser")
-    parser.add_argument("--port", "-p", type=int, default=8081, help="Port to serve on (default: 8081)")
-    parser.add_argument("--directory", "-d", type=str, help="Directory to serve (default: current directory)")
+    parser = argparse.ArgumentParser(description='Enhanced HTTP File Server with Complete Navigation')
+    parser.add_argument('--port', '-p', type=int, default=8081, help='Server port (default: 8081)')
+    parser.add_argument('--host', default='auto', help='Server host (default: auto-detect)')
+    parser.add_argument('--directory', '-d', default='.', help='Directory to serve (default: current)')
     
     args = parser.parse_args()
-    run_server(args.port, args.directory)
+    
+    # Change to serving directory
+    if args.directory != '.':
+        os.chdir(args.directory)
+    
+    # Auto-detect network interface and IP address
+    if args.host == 'auto':
+        detected_ip, interface = get_network_interface_ip()
+        if detected_ip != 'unavailable':
+            bind_host = '0.0.0.0'  # Bind to all interfaces
+            display_host = detected_ip
+        else:
+            bind_host = 'localhost'
+            display_host = 'localhost'
+    else:
+        bind_host = args.host
+        display_host = args.host
+    
+    print("🌐 Enhanced HTTP File Server with Complete Navigation")
+    print(f"📁 Serving directory: {os.getcwd()}")
+    print(f"🖥️  Local access: http://localhost:{args.port}/")
+    if bind_host == '0.0.0.0':
+        print(f"🌍 Network access: http://{display_host}:{args.port}/")
+        print(f"🔗 Interface: {interface if 'interface' in locals() else 'auto-detected'}")
+    print("⏹️  Press Ctrl+C to stop the server")
+    print("✨ Features: Directory Navigation, Video Previews, System Info, File Management")
+    print("=" * 80)
+    
+    try:
+        # Use ThreadingHTTPServer for better concurrency
+        with ThreadingHTTPServer((bind_host, args.port), RemoteFileServerHandler) as httpd:
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Server stopped by user")
+    except Exception as e:
+        print(f"❌ Error starting server: {e}")
+
+if __name__ == "__main__":
+    main()
