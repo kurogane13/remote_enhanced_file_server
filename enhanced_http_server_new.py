@@ -70,11 +70,36 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/javascript; charset=utf-8')
         elif self.path.endswith('.json'):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
+        elif self.path.endswith(('.mp4', '.m4v')):
+            self.send_header('Content-Type', 'video/mp4')
+        elif self.path.endswith('.webm'):
+            self.send_header('Content-Type', 'video/webm')
+        elif self.path.endswith(('.ogg', '.ogv')):
+            self.send_header('Content-Type', 'video/ogg')
+        elif self.path.endswith('.avi'):
+            self.send_header('Content-Type', 'video/x-msvideo')
+        elif self.path.endswith('.mov'):
+            self.send_header('Content-Type', 'video/quicktime')
+        elif self.path.endswith('.wmv'):
+            self.send_header('Content-Type', 'video/x-ms-wmv')
+        elif self.path.endswith('.flv'):
+            self.send_header('Content-Type', 'video/x-flv')
+        elif self.path.endswith('.mkv'):
+            self.send_header('Content-Type', 'video/x-matroska')
+        elif self.path.endswith('.3gp'):
+            self.send_header('Content-Type', 'video/3gpp')
+        elif self.path.endswith(('.mpeg', '.mpg')):
+            self.send_header('Content-Type', 'video/mpeg')
         
-        # Prevent aggressive caching
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.send_header('Pragma', 'no-cache')
-        self.send_header('Expires', '0')
+        # Add range request support for video files
+        if self.path.endswith(('.mp4', '.webm', '.ogg', '.ogv', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.3gp', '.mpeg', '.mpg', '.m4v')):
+            self.send_header('Accept-Ranges', 'bytes')
+        
+        # Prevent aggressive caching for HTML, but allow video caching
+        if not self.path.endswith(('.mp4', '.webm', '.ogg', '.ogv', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.3gp', '.mpeg', '.mpg', '.m4v')):
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
         
         super().end_headers()
     
@@ -635,10 +660,14 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
         }}
         
         .file-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            display: flex;
+            flex-direction: column;
             gap: 15px;
             padding: 20px;
+        }}
+        .file-grid.non-video {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
         }}
         
         .file-item {{
@@ -712,15 +741,109 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
         }}
         
         .file-details {{
-            display: flex;
-            justify-content: space-between;
             margin-top: 12px;
             font-size: 0.9em;
             color: #aaa;
         }}
+        .file-info-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }}
         .file-size {{
             font-weight: 600;
             color: #4fc3f7;
+        }}
+        .file-path {{
+            background: #1a202c;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 1.0em;
+            margin-top: 6px;
+            word-break: break-all;
+            color: #81c784;
+            border-left: 2px solid #4fc3f7;
+            overflow-wrap: break-word;
+            white-space: pre-wrap;
+            font-weight: 500;
+        }}
+        
+        /* Image Thumbnail Styles */
+        .thumbnail-container {{
+            margin: 8px 0;
+            text-align: center;
+            background: #2d3748;
+            border-radius: 4px;
+            padding: 4px;
+            border: 1px solid #4a5568;
+        }}
+        .thumbnail-image, .thumbnail-video {{
+            max-width: 300px;
+            max-height: 240px;
+            width: auto;
+            height: auto;
+            border-radius: 3px;
+            object-fit: cover;
+            background: #1a202c;
+            transition: transform 0.3s ease;
+        }}
+        .thumbnail-image:hover {{
+            transform: scale(2.1);
+            cursor: pointer;
+            z-index: 10;
+            position: relative;
+        }}
+        .video-static-thumb:hover {{
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+            background: linear-gradient(135deg, #3d4758 0%, #2a303d 100%);
+        }}
+        
+        /* Floating video preview overlay */
+        .video-preview-overlay {{
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 400px;
+            height: 300px;
+            background: #000;
+            border: 3px solid #ff6b6b;
+            border-radius: 8px;
+            z-index: 9999;
+            display: none;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
+        }}
+        
+        .video-preview-overlay video {{
+            width: 100%;
+            height: 100%;
+            border-radius: 5px;
+        }}
+        .video-overlay {{
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 2em;
+            color: #ff6b6b;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }}
+        .thumbnail-container:hover .video-overlay {{
+            opacity: 0.7;
+        }}
+        .thumbnail-container {{
+            position: relative;
+        }}
+        .has-thumbnail {{
+            min-height: 300px;
+        }}
+        .has-thumbnail .file-header {{
+            margin-bottom: 4px;
         }}
         
         /* Responsive Design */
@@ -777,6 +900,157 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                 section.querySelector('.category-header').style.transform = 'translateX(5px)';
             }}
         }});
+        
+        // Add click handlers for thumbnail images to open in new tab
+        document.addEventListener('click', function(e) {{
+            if (e.target.classList.contains('thumbnail-image')) {{
+                e.preventDefault();
+                window.open(e.target.src, '_blank');
+            }}
+        }});
+        
+        // SIMPLE video setup - no complex activation
+        function setupVideos() {{
+            console.log('=== SIMPLE VIDEO SETUP ===');
+            
+            const allVideos = document.querySelectorAll('.video-preview-player');
+            console.log('Found', allVideos.length, 'videos');
+            
+            // Simple preload for all videos
+            allVideos.forEach((video, index) => {{
+                console.log('Setting up video', index);
+                
+                video.preload = 'metadata';
+                video.load();
+                
+                // Set source directly for better compatibility
+                const source = video.querySelector('source');
+                if (source && source.src) {{
+                    video.src = source.src;
+                }}
+                
+                // Simple metadata handler
+                video.addEventListener('loadedmetadata', function() {{
+                    console.log('Video', index, 'metadata loaded');
+                    this.currentTime = 0.5;
+                }}, {{ once: true }});
+            }});
+            
+            // ONE-TIME activation on first user interaction anywhere on page
+            let activated = false;
+            const activateAllVideos = () => {{
+                if (activated) return;
+                activated = true;
+                
+                console.log('=== ACTIVATING ALL VIDEOS ON FIRST INTERACTION ===');
+                
+                allVideos.forEach((video, index) => {{
+                    setTimeout(() => {{
+                        video.play().then(() => {{
+                            console.log('Video', index, 'activated');
+                            video.pause();
+                            video.currentTime = 0.5;
+                        }}).catch(e => {{
+                            console.log('Video', index, 'activation failed:', e);
+                        }});
+                    }}, index * 50);
+                }});
+            }};
+            
+            // Listen for ANY user interaction to activate videos
+            ['click', 'mousedown', 'touchstart', 'keydown'].forEach(eventType => {{
+                document.addEventListener(eventType, activateAllVideos, {{ once: true }});
+            }});
+        }}
+            
+        // Setup interactions
+        function setupInteractions() {{
+            // Preview interactions
+            document.querySelectorAll('.video-static-thumb').forEach((thumb, index) => {{
+                const container = thumb.closest('.video-row-container');
+                const previewArea = container.querySelector('.video-preview-area');
+                const videoPlayer = container.querySelector('.video-preview-player');
+                
+                if (!previewArea || !videoPlayer) return;
+                
+                let previewTimeout = null;
+                
+                thumb.addEventListener('mouseenter', function() {{
+                    console.log('Hover video', index);
+                    
+                    if (previewTimeout) clearTimeout(previewTimeout);
+                    
+                    previewArea.style.display = 'block';
+                    videoPlayer.currentTime = 0;
+                    
+                    videoPlayer.play().catch(e => {{
+                        console.log('Video play failed:', e);
+                    }});
+                    
+                    previewTimeout = setTimeout(() => {{
+                        previewArea.style.display = 'none';
+                        videoPlayer.pause();
+                    }}, 60000);
+                }});
+                
+                thumb.addEventListener('mouseleave', function() {{
+                    setTimeout(() => {{
+                        if (!previewArea.matches(':hover')) {{
+                            previewArea.style.display = 'none';
+                            videoPlayer.pause();
+                            if (previewTimeout) clearTimeout(previewTimeout);
+                        }}
+                    }}, 100);
+                }});
+                
+                previewArea.addEventListener('mouseleave', function() {{
+                    this.style.display = 'none';
+                    videoPlayer.pause();
+                    if (previewTimeout) clearTimeout(previewTimeout);
+                }});
+            }});
+            
+            // Download buttons - SIMPLE approach
+            document.querySelectorAll('.download-btn').forEach(btn => {{
+                btn.addEventListener('click', function(e) {{
+                    console.log('Download clicked:', this.href);
+                    
+                    // Pause videos to free bandwidth
+                    document.querySelectorAll('.video-preview-player').forEach(video => {{
+                        video.pause();
+                    }});
+                    
+                    // Let browser handle download naturally
+                }});
+            }});
+            
+            // Play video buttons
+            document.querySelectorAll('.play-video-btn').forEach(btn => {{
+                btn.addEventListener('click', function(e) {{
+                    console.log('Play video clicked:', this.href);
+                    
+                    // Pause previews
+                    document.querySelectorAll('.video-preview-player').forEach(video => {{
+                        video.pause();
+                    }});
+                }});
+            }});
+        }}
+        
+        // Simple initialization
+        function initializeEverything() {{
+            setupVideos();
+            setupInteractions();
+        }}
+        
+        // Initialize
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', initializeEverything);
+        }} else {{
+            initializeEverything();
+        }}
+        
+        setTimeout(initializeEverything, 300);
     </script>
 </body>
 </html>'''
@@ -817,8 +1091,11 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                             <a href="../" class="action-btn view-btn">Go Up</a>
                         </div>
                         <div class="file-details">
-                            <span class="file-size">Directory</span>
-                            <span>{parent_absolute_path}</span>
+                            <div class="file-info-row">
+                                <span class="file-size">Directory</span>
+                                <span>Parent</span>
+                            </div>
+                            <div class="file-path">{parent_absolute_path}</div>
                         </div>
                     </div>
 '''
@@ -835,8 +1112,11 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                             <span class="action-btn" style="background: #4fc3f7; color: #000;">Current</span>
                         </div>
                         <div class="file-details">
-                            <span class="file-size">Directory</span>
-                            <span>{display_path}</span>
+                            <div class="file-info-row">
+                                <span class="file-size">Directory</span>
+                                <span>Current</span>
+                            </div>
+                            <div class="file-path">{display_path}</div>
                         </div>
                     </div>
 '''
@@ -870,8 +1150,10 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                             <a href="{dir_name}/" class="action-btn view-btn">Enter</a>
                         </div>
                         <div class="file-details">
-                            <span class="file-size">{file_count} files</span>
-                            <span>Subdirectory</span>
+                            <div class="file-info-row">
+                                <span class="file-size">{file_count} files</span>
+                                <span>Subdirectory</span>
+                            </div>
                         </div>
                     </div>
 '''
@@ -940,19 +1222,87 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                 if file_info['is_dir']:
                     file_icon = '📁'
                     actions = f'<a href="{file_info["name"]}/" class="action-btn view-btn">Enter</a>'
-                    details = f'<span class="file-size">Directory</span><span>Subdirectory</span>'
+                    details = f'''
+                        <div class="file-info-row">
+                            <span class="file-size">Directory</span>
+                            <span>Subdirectory</span>
+                        </div>'''
                 else:
                     _, ext = os.path.splitext(file_info['name'].lower())
                     file_icon = self.get_file_icon(ext)
-                    actions = f'<a href="{file_info["name"]}" class="action-btn view-btn">View</a><a href="{file_info["name"]}" download class="action-btn download-btn">Download</a>'
-                    details = f'<span class="file-size">{file_info["size"]}</span><span>{file_info["modified"]}</span>'
+                    
+                    # Special handling for video files - no actions needed (handled in video gallery)
+                    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.mpeg', '.mpg', '.m4v', '.3gp', '.ogv']
+                    if ext in video_extensions:
+                        actions = ''  # No separate actions - handled in video gallery layout
+                    else:
+                        actions = f'<a href="{file_info["name"]}" class="action-btn view-btn">View</a><a href="{file_info["name"]}" download class="action-btn download-btn">Download</a>'
+                    details = f'''
+                        <div class="file-info-row">
+                            <span class="file-size">{file_info["size"]}</span>
+                            <span>{file_info["modified"]}</span>
+                        </div>'''
+                    
+                    # Check if this is an image file for thumbnail display
+                    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.svg']
+                    is_image = ext in image_extensions
+                    file_info['is_image'] = is_image
+                    
+                    # Check if this is a video file for thumbnail display
+                    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.mpeg', '.mpg', '.m4v', '.3gp', '.ogv']
+                    is_video = ext in video_extensions
+                    file_info['is_video'] = is_video
                 
+                # Generate thumbnail HTML for image and video files
+                thumbnail_html = ""
+                if not file_info['is_dir']:
+                    if file_info.get('is_image', False):
+                        thumbnail_html = f'''
+                            <div class="thumbnail-container">
+                                <img src="{file_info['name']}" alt="Thumbnail of {file_info['name']}" class="thumbnail-image" loading="lazy" onerror="this.parentElement.style.display='none'">
+                            </div>'''
+                    elif file_info.get('is_video', False):
+                        thumbnail_html = f'''
+                            <div class="video-row-container" style="display: flex; align-items: flex-start; gap: 20px; width: 100%; background: #1a1f2e; border: 1px solid #4a5568; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
+                                <!-- Static Video Thumbnail -->
+                                <div class="video-static-thumb" data-video-url="{file_info['name']}" style="width: 200px; height: 150px; background: linear-gradient(135deg, #2d3748 0%, #1a202c 100%); border: 2px solid #ff6b6b; border-radius: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #ff6b6b; font-size: 1.5em; cursor: pointer; flex-shrink: 0;">
+                                    🎬
+                                    <div style="font-size: 0.4em; margin-top: 5px; color: #aaa; text-align: center;">Hover for Preview</div>
+                                </div>
+                                
+                                <!-- Video Preview Area -->
+                                <div class="video-preview-area" style="width: 300px; height: 225px; background: #000; border: 2px solid #ff6b6b; border-radius: 4px; display: none; flex-shrink: 0;">
+                                    <video class="video-preview-player" muted loop preload="metadata" style="width: 100%; height: 100%; border-radius: 2px;">
+                                        <source src="{file_info['name']}" type="video/mp4">
+                                    </video>
+                                </div>
+                                
+                                <!-- Video Information -->
+                                <div class="video-info" style="flex: 1; color: #e6e6e6;">
+                                    <h3 style="color: #81c784; font-weight: bold; margin: 0 0 10px 0; font-size: 1.2em; word-break: break-word;">{file_info['name']}</h3>
+                                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px 15px; font-size: 0.9em; margin-bottom: 15px;">
+                                        <span style="color: #aaa;">Size:</span>
+                                        <span style="color: #4fc3f7; font-weight: 500;">{file_info['size']}</span>
+                                        <span style="color: #aaa;">Modified:</span>
+                                        <span style="color: #81c784;">{file_info['modified']}</span>
+                                        <span style="color: #aaa;">Type:</span>
+                                        <span style="color: #ff8a65;">Video File ({ext.upper()})</span>
+                                    </div>
+                                    <div class="video-actions" style="display: flex; gap: 10px;">
+                                        <a href="{file_info['name']}" class="action-btn play-video-btn" target="_blank" rel="noopener noreferrer" style="background: #ff6b6b; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500; transition: background 0.3s;">▶️ Play Video</a>
+                                        <a href="{file_info['name']}" download class="action-btn download-btn" style="background: #2d3748; color: #e6e6e6; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 500; transition: background 0.3s;">⬇️ Download</a>
+                                    </div>
+                                </div>
+                            </div>'''
+                
+                has_media_thumbnail = (file_info.get('is_image', False) or file_info.get('is_video', False)) and not file_info['is_dir']
                 files_html.append(f'''
-                    <div class="file-item" data-filename="{file_info['name'].lower()}" data-original-name="{file_info['name']}" data-extension="{ext if not file_info['is_dir'] else ''}" data-size-bytes="{file_info['size_bytes']}" data-modified="{file_info['modified']}" data-hidden="false">
+                    <div class="file-item {('has-thumbnail' if has_media_thumbnail else '')}" data-filename="{file_info['name'].lower()}" data-original-name="{file_info['name']}" data-extension="{ext if not file_info['is_dir'] else ''}" data-size-bytes="{file_info['size_bytes']}" data-modified="{file_info['modified']}" data-hidden="false">
                         <div class="file-header">
                             <span class="file-icon">{file_icon}</span>
                             <div class="file-name">{file_info['name']}</div>
                         </div>
+                        {thumbnail_html}
                         <div class="file-actions">
                             {actions}
                         </div>
@@ -962,13 +1312,15 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 ''')
             
+            # Use different grid class for videos vs other files
+            grid_class = "file-grid" if category == 'Videos' else "file-grid non-video"
             sections_html.append(f'''
                 <div class="category-section">
                     <div class="category-header">
                         <span>{category_icon} {category} ({count})</span>
                     </div>
                     <div class="category-content">
-                        <div class="file-grid">
+                        <div class="{grid_class}">
                             {''.join(files_html)}
                         </div>
                     </div>
