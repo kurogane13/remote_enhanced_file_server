@@ -1018,9 +1018,9 @@ remove_saved_configuration() {
             echo -e "Configuration to delete: ${BOLD}$config_name${NC} ($config_user@$config_host)"
             echo -e "Type: $config_type"
             echo
-            read -p "$(echo -e "${BOLD}Are you sure you want to delete this configuration? (yes/no):${NC} ")" confirm
+            read -p "$(echo -e "${BOLD}Are you sure you want to delete this configuration? (y/yes/n/no):${NC} ")" confirm
             
-            if [[ "$confirm" =~ ^[Yy][Ee][Ss]$ ]]; then
+            if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
                 # Delete the configuration
                 if [[ "$config_type" == "SSH" ]]; then
                     # Remove SSH key configuration using Python for proper JSON handling
@@ -1061,7 +1061,10 @@ except Exception as e:
                         log_error "Failed to delete password configuration"
                     fi
                 fi
+            elif [[ "$confirm" =~ ^[Nn]([Oo])?$ ]]; then
+                log_info "Deletion cancelled"
             else
+                log_warning "Invalid response. Please enter y/yes or n/no"
                 log_info "Deletion cancelled"
             fi
         else
@@ -1136,6 +1139,23 @@ setup_connection() {
             5)
                 if select_from_saved_configurations "$ssh_config" "$password_config"; then
                     return 0
+                else
+                    # User pressed Enter to go back, redisplay menu
+                    echo
+                    # Reload configurations in case they changed
+                    ssh_config=$(load_ssh_config)
+                    password_config=$(load_password_config)
+                    # Redisplay the menu to help user reorient
+                    show_available_configurations "$ssh_config" "$password_config"
+                    echo -e "${BOLD}Authentication Options:${NC}"
+                    echo
+                    echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
+                    echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+                    echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
+                    echo -e "  ${GREEN}4${NC}. Save new password configuration"
+                    echo -e "  ${GREEN}5${NC}. List and select saved configurations"
+                    echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+                    echo
                 fi
                 ;;
             6)
@@ -1159,6 +1179,21 @@ setup_connection() {
                 ;;
             *)
                 log_warning "Invalid choice. Please select 1-6."
+                echo
+                # Reload configurations in case they changed during invalid attempts
+                ssh_config=$(load_ssh_config)
+                password_config=$(load_password_config)
+                # Redisplay the menu to help user reorient
+                show_available_configurations "$ssh_config" "$password_config"
+                echo -e "${BOLD}Authentication Options:${NC}"
+                echo
+                echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
+                echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+                echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
+                echo -e "  ${GREEN}4${NC}. Save new password configuration"
+                echo -e "  ${GREEN}5${NC}. List and select saved configurations"
+                echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+                echo
                 ;;
         esac
     done
@@ -1333,30 +1368,40 @@ save_new_ssh_config() {
         return 1
     fi
     
-    # Extract current values
-    local current_default_key=$(echo "$config" | grep -o '"default_key": *"[^"]*"' | sed 's/.*": *"\([^"]*\)".*/\1/')
-    local current_default_user=$(echo "$config" | grep -o '"default_user": *"[^"]*"' | sed 's/.*": *"\([^"]*\)".*/\1/')
-    local current_default_host=$(echo "$config" | grep -o '"default_host": *"[^"]*"' | sed 's/.*": *"\([^"]*\)".*/\1/')
-    local current_saved=$(echo "$config" | sed -n 's/.*"saved_keys": *{\([^}]*\)}.*/\1/p')
+    # Use Python for proper JSON manipulation
+    local new_config=$(python3 -c "
+import json, sys
+try:
+    # Load existing config or create empty one
+    if '''$config''' == '{}':
+        config_data = {'saved_keys': {}, 'default_key': '', 'default_user': '', 'default_host': ''}
+    else:
+        config_data = json.loads('''$config''')
     
-    # Build new entry
-    local new_entry="\"$config_name\": {\"key\": \"$new_key\", \"user\": \"$new_user\", \"host\": \"$new_host\"}"
-    local new_saved_section=""
-    if [[ -n "$current_saved" && "$current_saved" != "" ]]; then
-        new_saved_section="$current_saved, $new_entry"
-    else
-        new_saved_section="$new_entry"
-    fi
+    # Ensure saved_keys exists
+    if 'saved_keys' not in config_data:
+        config_data['saved_keys'] = {}
     
-    # Create updated config
-    local updated_config="{
-    \"default_key\": \"$current_default_key\",
-    \"default_user\": \"$current_default_user\",
-    \"default_host\": \"$current_default_host\",
-    \"saved_keys\": {$new_saved_section}
-}"
+    # Add new SSH key configuration
+    config_data['saved_keys']['$config_name'] = {
+        'key': '$new_key',
+        'user': '$new_user', 
+        'host': '$new_host'
+    }
     
-    if save_ssh_config "$updated_config"; then
+    # Update defaults
+    config_data['default_key'] = '$new_key'
+    config_data['default_user'] = '$new_user'
+    config_data['default_host'] = '$new_host'
+    
+    # Output clean JSON
+    print(json.dumps(config_data, separators=(',', ':')))
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+
+    if [[ $? -eq 0 ]] && save_ssh_config "$new_config"; then
         log_success "SSH configuration '$config_name' saved successfully!"
         return 0
     else
@@ -1408,30 +1453,41 @@ save_new_password_config() {
         return 1
     fi
     
-    # Extract current values
-    local current_default_user=$(echo "$config" | grep -o '"default_user": *"[^"]*"' | sed 's/.*": *"\([^"]*\)".*/\1/')
-    local current_default_host=$(echo "$config" | grep -o '"default_host": *"[^"]*"' | sed 's/.*": *"\([^"]*\)".*/\1/')
-    local current_saved=$(echo "$config" | sed -n 's/.*"saved_passwords": *{\([^}]*\)}.*/\1/p')
+    # Use Python for proper JSON manipulation
+    local new_config=$(python3 -c "
+import json, sys
+try:
+    # Load existing config or create empty one
+    if '''$config''' == '{}':
+        config_data = {'saved_passwords': {}, 'default_user': '', 'default_host': ''}
+    else:
+        config_data = json.loads('''$config''')
     
-    # Build new entry (store password in plain text)
-    local new_entry="\"$config_name\": {\"user\": \"$new_user\", \"host\": \"$new_host\", \"password\": \"$new_password\"}"
-    local new_saved_section=""
-    if [[ -n "$current_saved" && "$current_saved" != "" ]]; then
-        new_saved_section="$current_saved, $new_entry"
-    else
-        new_saved_section="$new_entry"
-    fi
+    # Ensure saved_passwords exists
+    if 'saved_passwords' not in config_data:
+        config_data['saved_passwords'] = {}
     
-    # Create updated config
-    local updated_config="{
-    \"default_user\": \"$current_default_user\",
-    \"default_host\": \"$current_default_host\",
-    \"saved_passwords\": {$new_saved_section}
-}"
+    # Add new password configuration
+    config_data['saved_passwords']['$config_name'] = {
+        'user': '$new_user',
+        'host': '$new_host', 
+        'password': '$new_password'
+    }
     
-    if save_password_config "$updated_config"; then
+    # Update defaults
+    config_data['default_user'] = '$new_user'
+    config_data['default_host'] = '$new_host'
+    
+    # Output clean JSON
+    print(json.dumps(config_data, separators=(',', ':')))
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+
+    if [[ $? -eq 0 ]] && save_password_config "$new_config"; then
         log_success "Password configuration '$config_name' saved successfully!"
-        log_warning "Password is stored with basic obfuscation - keep config files secure!"
+        log_warning "Password is stored in plain text - keep config files secure!"
         return 0
     else
         log_error "Failed to save password configuration"
