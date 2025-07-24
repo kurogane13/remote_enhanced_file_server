@@ -892,7 +892,11 @@ class RemoteFileServerHandler(http.server.SimpleHTTPRequestHandler):
             color: #e6e6e6;
             margin-bottom: 4px;
             overflow-wrap: break-word;
+            word-break: break-word;
             line-height: 1.3;
+            max-width: 100%;
+            flex: 1;
+            min-width: 0;
         }}
         
         /* Action Buttons */
