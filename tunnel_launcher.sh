@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
-GRAY='\033[0;90m'
+GRAY='\033[1;37m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
@@ -23,6 +23,12 @@ DEFAULT_REMOTE_HOST=""
 LOCAL_PORT=8081
 REMOTE_PORT=8081
 REMOTE_SCRIPT_PATH="~/start_http_server.sh"
+
+# Host Configuration
+HOSTS_CONFIG_DIR="$HOME/.tunnel_configs"
+HOSTS_CONFIG_FILE="$HOSTS_CONFIG_DIR/remote_hosts.conf"
+SSH_CONFIGS_FILE="$HOSTS_CONFIG_DIR/ssh_keys.json"
+PASSWORD_CONFIGS_FILE="$HOSTS_CONFIG_DIR/passwords.json"
 
 # Active Configuration (will be set by setup_connection function)
 SSH_KEY=""
@@ -63,13 +69,1130 @@ log_error() {
 
 log_debug() {
     if [[ "$DEBUG" == true ]]; then
-        echo -e "${GRAY}🐛 DEBUG: $1${NC}"
+        echo -e "${WHITE}🐛 DEBUG: $1${NC}"
     fi
 }
 
 log_verbose() {
     if [[ "$VERBOSE" == true ]]; then
-        echo -e "${GRAY}📝 $1${NC}"
+        echo -e "${WHITE}📝 $1${NC}"
+    fi
+}
+
+# Host Management Functions
+init_hosts_config() {
+    # Ensure configuration directory exists
+    mkdir -p "$HOSTS_CONFIG_DIR"
+    
+    # Create SSH config file if it doesn't exist
+    if [ ! -f "$SSH_CONFIGS_FILE" ]; then
+        echo "{}" > "$SSH_CONFIGS_FILE"
+        log_debug "Created SSH configurations file: $SSH_CONFIGS_FILE"
+    fi
+    
+    # Create password config file if it doesn't exist
+    if [ ! -f "$PASSWORD_CONFIGS_FILE" ]; then
+        echo "{}" > "$PASSWORD_CONFIGS_FILE"
+        log_debug "Created password configurations file: $PASSWORD_CONFIGS_FILE"
+    fi
+    
+    # Create hosts file if it doesn't exist
+    if [ ! -f "$HOSTS_CONFIG_FILE" ]; then
+        touch "$HOSTS_CONFIG_FILE"
+        log_debug "Created hosts configuration file: $HOSTS_CONFIG_FILE"
+    fi
+}
+
+# Extract IPs from saved SSH key and password configurations
+sync_hosts_from_configs() {
+    log_debug "Syncing hosts file from saved configurations..."
+    
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+    local ssh_ips=()
+    local password_ips=()
+    
+    # Extract unique IPs from SSH configs using Python JSON parsing
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_extracted=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    unique_ips = set()
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_extracted" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    ssh_ips+=("$ip")
+                    log_debug "Found unique SSH IP: $ip"
+                fi
+            done <<< "$ssh_extracted"
+        fi
+    fi
+    
+    # Extract unique IPs from password configs using Python JSON parsing
+    if [[ "$password_config" != "{}" ]]; then
+        local password_extracted=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    unique_ips = set()
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_extracted" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    password_ips+=("$ip")
+                    log_debug "Found unique Password IP: $ip"
+                fi
+            done <<< "$password_extracted"
+        fi
+    fi
+    
+    # Read existing hosts file
+    local existing_ips=()
+    if [[ -f "$HOSTS_CONFIG_FILE" ]]; then
+        while IFS= read -r line; do
+            line=$(echo "$line" | xargs) # trim whitespace
+            if [[ -n "$line" && ! "$line" =~ ^# ]]; then
+                existing_ips+=("$line")
+            fi
+        done < "$HOSTS_CONFIG_FILE"
+    fi
+    
+    # Write to hosts file with section headers
+    {
+        if [[ ${#ssh_ips[@]} -gt 0 ]]; then
+            echo "# SSH KEY saved connections IPS"
+            echo ""
+            printf '%s\n' "${ssh_ips[@]}"
+            echo ""
+        fi
+        
+        if [[ ${#password_ips[@]} -gt 0 ]]; then
+            echo "# SSH PASSWORD saved connections IPS"
+            echo ""
+            printf '%s\n' "${password_ips[@]}"
+            echo ""
+        fi
+        
+        # Add any existing IPs that weren't from configs (manually added)
+        local all_config_ips=("${ssh_ips[@]}" "${password_ips[@]}")
+        local manual_ips=()
+        
+        for existing_ip in "${existing_ips[@]}"; do
+            local found=false
+            for config_ip in "${all_config_ips[@]}"; do
+                if [[ "$existing_ip" == "$config_ip" ]]; then
+                    found=true
+                    break
+                fi
+            done
+            
+            if [[ "$found" == false ]]; then
+                manual_ips+=("$existing_ip")
+            fi
+        done
+        
+        if [[ ${#manual_ips[@]} -gt 0 ]]; then
+            echo "# MANUAL HOST ENTRIES"
+            echo ""
+            printf '%s\n' "${manual_ips[@]}"
+        fi
+        
+    } > "$HOSTS_CONFIG_FILE"
+    
+    local total_ips=$((${#ssh_ips[@]} + ${#password_ips[@]} + ${#manual_ips[@]}))
+    log_debug "Synced $total_ips IPs to hosts file (${#ssh_ips[@]} SSH, ${#password_ips[@]} Password, ${#manual_ips[@]} Manual)"
+}
+
+# Add new IP to hosts file if not already present
+add_ip_to_hosts() {
+    local new_ip="$1"
+    
+    if [[ -z "$new_ip" ]]; then
+        return 1
+    fi
+    
+    # Check if IP already exists
+    if grep -q "^$new_ip$" "$HOSTS_CONFIG_FILE" 2>/dev/null; then
+        log_debug "IP $new_ip already exists in hosts file"
+        return 0
+    fi
+    
+    # Add new IP
+    echo "$new_ip" >> "$HOSTS_CONFIG_FILE"
+    log_debug "Added new IP to hosts file: $new_ip"
+}
+
+# Get list of available IPs that have valid configurations
+get_available_hosts() {
+    local hosts_with_configs=()
+    
+    # Get IPs from SSH configurations
+    local ssh_config=$(load_ssh_config)
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    unique_ips = set()
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    hosts_with_configs+=("$ip")
+                fi
+            done <<< "$ssh_ips"
+        fi
+    fi
+    
+    # Get IPs from password configurations
+    local password_config=$(load_password_config)
+    if [[ "$password_config" != "{}" ]]; then
+        local password_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    unique_ips = set()
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]] && ! printf '%s\n' "${hosts_with_configs[@]}" | grep -q "^$ip$"; then
+                    hosts_with_configs+=("$ip")
+                fi
+            done <<< "$password_ips"
+        fi
+    fi
+    
+    # Sort and return unique IPs that have configurations
+    if [[ ${#hosts_with_configs[@]} -gt 0 ]]; then
+        printf '%s\n' "${hosts_with_configs[@]}" | sort -u
+    fi
+}
+
+# Find matching configuration for an IP
+find_config_for_ip() {
+    local target_ip="$1"
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+    
+    # Check SSH configs first
+    if [[ -n "$ssh_config" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[^#]*@.*$target_ip ]]; then
+                echo "ssh:$line"
+                return 0
+            fi
+        done <<< "$ssh_config"
+    fi
+    
+    # Check password configs
+    if [[ -n "$password_config" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[^#]*@.*$target_ip ]]; then
+                echo "password:$line"
+                return 0
+            fi
+        done <<< "$password_config"
+    fi
+    
+    return 1
+}
+
+# Show available hosts for selection
+show_host_selection_menu() {
+    local hosts=($(get_available_hosts))
+    
+    if [[ ${#hosts[@]} -eq 0 ]]; then
+        log_warning "No hosts configured yet"
+        log_info "Please save an SSH key or password configuration first"
+        return 1
+    fi
+    
+    echo
+    echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}${BOLD}           📡 Select Remote Host 📡             ${NC}"
+    echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+    echo
+    echo -e "${BOLD}HOSTS CONFIGURATION IPS FILES:${NC}"
+    echo
+    echo -e "${BOLD}Showing saved IPS for ssh keys and password configurations:${NC}"
+    echo
+    
+    # Display the hosts file content with formatting
+    if [[ -f "$HOSTS_CONFIG_FILE" ]]; then
+        cat "$HOSTS_CONFIG_FILE"
+    fi
+    echo
+    
+    local counter=1
+    for host in "${hosts[@]}"; do
+        local user="Unknown"
+        local auth_type="${RED}No Config${NC}"
+        
+        # Check SSH configurations first
+        local ssh_config=$(load_ssh_config)
+        if [[ "$ssh_config" != "{}" ]]; then
+            local ssh_info=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ -n "$ssh_info" ]]; then
+                user="$ssh_info"
+                auth_type="${GREEN}SSH KEY${NC}"
+            fi
+        fi
+        
+        # If not found in SSH, check password configurations
+        if [[ "$auth_type" == "${RED}No Config${NC}" ]]; then
+            local password_config=$(load_password_config)
+            if [[ "$password_config" != "{}" ]]; then
+                local password_info=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+                
+                if [[ -n "$password_info" ]]; then
+                    user="$password_info"
+                    auth_type="${YELLOW}SSH PASSWORD${NC}"
+                fi
+            fi
+        fi
+        
+        echo -e "${BOLD}${GREEN}[$counter]${NC} ${CYAN}$host${NC}"
+        echo -e "     Auth: $auth_type | User: ${WHITE}$user${NC}"
+        echo
+        ((counter++))
+    done
+    
+    echo -e "${BOLD}${GREEN}[m]${NC} ${BOLD}Manage Host Configurations${NC}"
+    echo -e "${BOLD}${RED}[b]${NC} ${BOLD}Back to Main Menu${NC}"
+    echo
+    
+    while true; do
+        echo -ne "${BOLD}${CYAN}Select host [1-${#hosts[@]}/m/b]: ${NC}"
+        read -r choice
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#hosts[@]} ]; then
+            local selected_host="${hosts[$((choice-1))]}"
+            local config_info=$(find_config_for_ip "$selected_host")
+            
+            if [[ -z "$config_info" ]]; then
+                log_error "No valid configuration found for $selected_host"
+                log_warning "Host file may have been manually modified"
+                continue
+            fi
+            
+            # Set global variables based on selection
+            REMOTE_HOST="$selected_host"
+            
+            if [[ "$config_info" =~ ^ssh: ]]; then
+                local config_line=$(echo "$config_info" | cut -d':' -f2-)
+                # Parse SSH config line format: user@host:key_path:description
+                REMOTE_USER=$(echo "$config_line" | cut -d'@' -f1)
+                SSH_KEY=$(echo "$config_line" | cut -d':' -f2)
+                USE_PASSWORD=false
+                REMOTE_PASSWORD=""
+                log_success "Selected host $selected_host with SSH key authentication"
+            elif [[ "$config_info" =~ ^password: ]]; then
+                local config_line=$(echo "$config_info" | cut -d':' -f2-)
+                # Parse password config line format: user@host:password:description
+                REMOTE_USER=$(echo "$config_line" | cut -d'@' -f1)
+                USE_PASSWORD=true
+                REMOTE_PASSWORD=$(echo "$config_line" | cut -d':' -f2)
+                SSH_KEY=""
+                log_success "Selected host $selected_host with password authentication"
+            fi
+            
+            return 0
+            
+        elif [[ "$choice" == "m" || "$choice" == "M" ]]; then
+            manage_hosts_menu
+            # After managing hosts, sync and redisplay
+            sync_hosts_from_configs
+            show_host_selection_menu
+            return $?
+            
+        elif [[ "$choice" == "b" || "$choice" == "B" ]]; then
+            return 1
+            
+        else
+            log_error "Invalid choice. Please select 1-${#hosts[@]}, 'm' for manage, or 'b' for back."
+        fi
+    done
+}
+
+# Host management menu
+manage_hosts_menu() {
+    while true; do
+        clear
+        echo
+        echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+        echo -e "${WHITE}${BOLD}           🏠 Manage Host Configurations 🏠             ${NC}"
+        echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+        echo
+        echo -e "${BOLD}Host Management Options:${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[1]${NC} ${BOLD}List Current Hosts${NC}"
+        echo -e "     ${WHITE}📋 View all configured hosts and their authentication${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[2]${NC} ${BOLD}Clean Hosts File${NC}"
+        echo -e "     ${WHITE}🧹 Remove hosts without valid configurations${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[3]${NC} ${BOLD}Add Manual Host${NC}"
+        echo -e "     ${WHITE}➕ Add IP address manually (must have SSH/password config)${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[4]${NC} ${BOLD}Remove Host${NC}"
+        echo -e "     ${WHITE}🗑️  Remove host from list${NC}"
+        echo
+        echo -e "${BOLD}${RED}[b]${NC} ${BOLD}Back${NC}"
+        echo
+        
+        echo -ne "${BOLD}${CYAN}Choose option [1-4/b]: ${NC}"
+        read -r choice
+        
+        case "$choice" in
+            1)
+                list_hosts_with_configs
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            2)
+                clean_hosts_file
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            3)
+                add_manual_host
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            4)
+                remove_host_from_file
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            b|B)
+                return 0
+                ;;
+            *)
+                log_error "Invalid choice"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# List hosts with their configurations
+list_hosts_with_configs() {
+    clear
+    echo
+    echo -e "${BOLD}${CYAN}📋 Current Host Configurations${NC}"
+    echo
+    
+    local hosts=($(get_available_hosts))
+    
+    if [[ ${#hosts[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}No hosts configured${NC}"
+        return
+    fi
+    
+    printf "%-3s %-15s %-15s %-20s %-25s\n" "No." "Host IP" "User" "Auth Type" "Config Name"
+    echo "─────────────────────────────────────────────────────────────────────────────"
+    
+    local counter=1
+    for host in "${hosts[@]}"; do
+        local found_configs=false
+        
+        # Check SSH configurations
+        local ssh_config=$(load_ssh_config)
+        if [[ "$ssh_config" != "{}" ]]; then
+            local ssh_configs=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}|SSH KEY|{name}\")
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ -n "$ssh_configs" ]]; then
+                while IFS= read -r line; do
+                    if [[ -n "$line" ]]; then
+                        local user=$(echo "$line" | cut -d'|' -f1)
+                        local auth_type=$(echo "$line" | cut -d'|' -f2)
+                        local config_name=$(echo "$line" | cut -d'|' -f3)
+                        printf "%-3s %-15s %-15s %-20s %-25s\n" "$counter" "$host" "$user" "$auth_type" "$config_name"
+                        ((counter++))
+                        found_configs=true
+                    fi
+                done <<< "$ssh_configs"
+            fi
+        fi
+        
+        # Check password configurations
+        local password_config=$(load_password_config)
+        if [[ "$password_config" != "{}" ]]; then
+            local password_configs=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}|SSH PASSWORD|{name}\")
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ -n "$password_configs" ]]; then
+                while IFS= read -r line; do
+                    if [[ -n "$line" ]]; then
+                        local user=$(echo "$line" | cut -d'|' -f1)
+                        local auth_type=$(echo "$line" | cut -d'|' -f2)
+                        local config_name=$(echo "$line" | cut -d'|' -f3)
+                        printf "%-3s %-15s %-15s %-20s %-25s\n" "$counter" "$host" "$user" "$auth_type" "$config_name"
+                        ((counter++))
+                        found_configs=true
+                    fi
+                done <<< "$password_configs"
+            fi
+        fi
+        
+        # If no configurations found for this host
+        if [[ "$found_configs" == false ]]; then
+            printf "%-3s %-15s %-15s %-20s %-25s\n" "$counter" "$host" "Unknown" "No Config" "None"
+            ((counter++))
+        fi
+    done
+}
+
+# Clean hosts file by removing entries without valid configs
+clean_hosts_file() {
+    log_info "Cleaning hosts file..."
+    
+    local hosts=($(get_available_hosts))
+    local valid_hosts=()
+    local removed_count=0
+    
+    for host in "${hosts[@]}"; do
+        local config_info=$(find_config_for_ip "$host")
+        if [[ -n "$config_info" ]]; then
+            valid_hosts+=("$host")
+        else
+            log_warning "Removing host without valid config: $host"
+            ((removed_count++))
+        fi
+    done
+    
+    # Write back only valid hosts
+    printf '%s\n' "${valid_hosts[@]}" > "$HOSTS_CONFIG_FILE"
+    
+    log_success "Cleaned hosts file. Removed $removed_count invalid entries."
+    log_info "Valid hosts remaining: ${#valid_hosts[@]}"
+}
+
+# Add manual host
+add_manual_host() {
+    echo
+    echo -ne "${CYAN}Enter IP address to add: ${NC}"
+    read -r new_ip
+    
+    if [[ -z "$new_ip" ]]; then
+        log_error "IP address cannot be empty"
+        return 1
+    fi
+    
+    # Basic IP validation
+    if [[ ! "$new_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        log_error "Invalid IP address format"
+        return 1
+    fi
+    
+    # Check SSH configurations first
+    local ssh_config=$(load_ssh_config)
+    local existing_ssh_configs=()
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_matches=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if details.get('host') == '$new_ip':
+                print(f\"{name}|{details['user']}|{details['key']}\")
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_matches" ]]; then
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    existing_ssh_configs+=("$line")
+                fi
+            done <<< "$ssh_matches"
+        fi
+    fi
+    
+    # Check password configurations
+    local password_config=$(load_password_config)
+    local existing_password_configs=()
+    if [[ "$password_config" != "{}" ]]; then
+        local password_matches=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if details.get('host') == '$new_ip':
+                print(f\"{name}|{details['user']}\")
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_matches" ]]; then
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    existing_password_configs+=("$line")
+                fi
+            done <<< "$password_matches"
+        fi
+    fi
+    
+    # If configurations exist, show them and ask user
+    if [[ ${#existing_ssh_configs[@]} -gt 0 || ${#existing_password_configs[@]} -gt 0 ]]; then
+        echo
+        log_warning "Configuration(s) already exist for $new_ip:"
+        echo
+        
+        if [[ ${#existing_ssh_configs[@]} -gt 0 ]]; then
+            echo -e "${BOLD}SSH KEY configurations:${NC}"
+            for config in "${existing_ssh_configs[@]}"; do
+                local name=$(echo "$config" | cut -d'|' -f1)
+                local user=$(echo "$config" | cut -d'|' -f2)
+                local key=$(echo "$config" | cut -d'|' -f3)
+                echo -e "  ${GREEN}●${NC} ${CYAN}$name${NC}: ${WHITE}$user@$new_ip${NC} (${YELLOW}$(basename "$key")${NC})"
+            done
+            echo
+        fi
+        
+        if [[ ${#existing_password_configs[@]} -gt 0 ]]; then
+            echo -e "${BOLD}SSH PASSWORD configurations:${NC}"
+            for config in "${existing_password_configs[@]}"; do
+                local name=$(echo "$config" | cut -d'|' -f1)
+                local user=$(echo "$config" | cut -d'|' -f2)
+                echo -e "  ${GREEN}●${NC} ${CYAN}$name${NC}: ${WHITE}$user@$new_ip${NC} (${YELLOW}SSH PASSWORD${NC})"
+            done
+            echo
+        fi
+        
+        echo -e "${BOLD}Options:${NC}"
+        echo -e "  ${GREEN}1${NC}. Create additional configuration for $new_ip with different credentials"
+        echo -e "  ${GREEN}2${NC}. Cancel"
+        echo
+        
+        echo -ne "${CYAN}Choose option [1-2]: ${NC}"
+        read -r user_choice
+        
+        case $user_choice in
+            1)
+                log_info "Creating additional configuration for $new_ip..."
+                echo
+                ;;
+            2)
+                log_info "Operation cancelled"
+                return 0
+                ;;
+            *)
+                log_error "Invalid choice"
+                return 1
+                ;;
+        esac
+    else
+        echo
+        log_info "No existing configuration found for $new_ip. Creating new configuration..."
+        echo
+    fi
+    
+    # Get configuration name first and validate it doesn't exist
+    while true; do
+        echo -ne "${CYAN}Enter configuration name for $new_ip: ${NC}"
+        read -r config_name
+        
+        if [[ -z "$config_name" ]]; then
+            log_error "Configuration name cannot be empty"
+            continue
+        fi
+        
+        # Check if configuration name already exists in SSH configs
+        local ssh_config=$(load_ssh_config)
+        local ssh_name_exists=false
+        if [[ "$ssh_config" != "{}" ]]; then
+            local ssh_name_check=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config and '$config_name' in config['saved_keys']:
+        print('exists')
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ "$ssh_name_check" == "exists" ]]; then
+                ssh_name_exists=true
+            fi
+        fi
+        
+        # Check if configuration name already exists in password configs
+        local password_config=$(load_password_config)
+        local password_name_exists=false
+        if [[ "$password_config" != "{}" ]]; then
+            local password_name_check=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config and '$config_name' in config['saved_passwords']:
+        print('exists')
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ "$password_name_check" == "exists" ]]; then
+                password_name_exists=true
+            fi
+        fi
+        
+        # If name exists in either file, ask for a different one
+        if [[ "$ssh_name_exists" == true || "$password_name_exists" == true ]]; then
+            if [[ "$ssh_name_exists" == true ]]; then
+                log_error "Configuration name '$config_name' already exists in SSH KEY configurations"
+            fi
+            if [[ "$password_name_exists" == true ]]; then
+                log_error "Configuration name '$config_name' already exists in SSH PASSWORD configurations"
+            fi
+            echo
+            echo -e "${BOLD}Options:${NC}"
+            echo -e "  ${GREEN}1${NC}. Try a different configuration name"
+            echo -e "  ${GREEN}2${NC}. Cancel"
+            echo
+            echo -ne "${CYAN}Choose option [1-2]: ${NC}"
+            read -r name_choice
+            
+            case $name_choice in
+                1)
+                    continue
+                    ;;
+                2)
+                    log_info "Operation cancelled"
+                    return 0
+                    ;;
+                *)
+                    log_error "Invalid choice"
+                    continue
+                    ;;
+            esac
+        else
+            # Name is unique, proceed
+            break
+        fi
+    done
+    
+    # Get username
+    echo -ne "${CYAN}Enter username for $new_ip: ${NC}"
+    read -r username
+    if [[ -z "$username" ]]; then
+        log_error "Username cannot be empty"
+        return 1
+    fi
+    
+    # Choose authentication method
+    echo
+    echo -e "${BOLD}Choose authentication method:${NC}"
+    echo -e "${GREEN}1)${NC} SSH Key"
+    echo -e "${GREEN}2)${NC} Password"
+    echo -ne "${CYAN}Enter choice [1-2]: ${NC}"
+    read -r auth_choice
+    
+    case $auth_choice in
+        1)
+            # SSH Key configuration
+            echo -ne "${CYAN}Enter SSH key path (default: ~/.ssh/id_rsa): ${NC}"
+            read -r ssh_key_input
+            if [[ -z "$ssh_key_input" ]]; then
+                ssh_key_path="$HOME/.ssh/id_rsa"
+            else
+                ssh_key_path="$ssh_key_input"
+            fi
+            
+            # Expand tilde
+            ssh_key_path="${ssh_key_path/#\~/$HOME}"
+            
+            if [[ ! -f "$ssh_key_path" ]]; then
+                log_error "SSH key file not found: $ssh_key_path"
+                return 1
+            fi
+            
+            # Validate SSH key
+            if ! validate_ssh_config "$ssh_key_path" "$username" "$new_ip"; then
+                log_error "SSH configuration validation failed"
+                return 1
+            fi
+            
+            # Configuration name already obtained and validated above
+            
+            # Add to SSH configuration
+            local ssh_config=$(load_ssh_config)
+            local new_ssh_config=$(python3 -c "
+import json, sys
+try:
+    if '''$ssh_config''' == '{}':
+        config_data = {'saved_keys': {}, 'default_key': '', 'default_user': '', 'default_host': ''}
+    else:
+        config_data = json.loads('''$ssh_config''')
+    
+    if 'saved_keys' not in config_data:
+        config_data['saved_keys'] = {}
+    
+    config_data['saved_keys']['$config_name'] = {
+        'key': '$ssh_key_path',
+        'user': '$username', 
+        'host': '$new_ip'
+    }
+    
+    print(json.dumps(config_data, separators=(',', ':')))
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+            
+            if [[ $? -eq 0 ]] && save_ssh_config "$new_ssh_config"; then
+                log_success "SSH KEY configuration '$config_name' added for $username@$new_ip"
+                log_info "SSH key: $ssh_key_path"
+            else
+                log_error "Failed to save SSH configuration"
+                return 1
+            fi
+            ;;
+            
+        2)
+            # Password configuration
+            if ! command -v sshpass &> /dev/null; then
+                log_error "sshpass is required for password authentication but not installed"
+                log_info "Install with: sudo apt install sshpass"
+                return 1
+            fi
+            
+            echo -ne "${CYAN}Enter password for $username@$new_ip: ${NC}"
+            read -rs password
+            echo
+            
+            if [[ -z "$password" ]]; then
+                log_error "Password cannot be empty"
+                return 1
+            fi
+            
+            # Test password authentication
+            log_info "Testing password authentication..."
+            if ! sshpass -p "$password" ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$username@$new_ip" "echo 'SSH connection test successful'" 2>/dev/null; then
+                log_error "Password authentication test failed for $username@$new_ip"
+                log_info "Please verify:"
+                log_info "  - Username is correct: $username"
+                log_info "  - Password is correct"
+                log_info "  - Host $new_ip is reachable"
+                log_info "  - SSH service is running on $new_ip"
+                return 1
+            fi
+            
+            log_success "Password authentication test successful"
+            
+            # Configuration name already obtained and validated above
+            
+            # Add to password configuration
+            local password_config=$(load_password_config)
+            local new_password_config=$(python3 -c "
+import json, sys
+try:
+    if '''$password_config''' == '{}':
+        config_data = {'saved_passwords': {}, 'default_user': '', 'default_host': '', 'default_password': ''}
+    else:
+        config_data = json.loads('''$password_config''')
+    
+    if 'saved_passwords' not in config_data:
+        config_data['saved_passwords'] = {}
+    
+    config_data['saved_passwords']['$config_name'] = {
+        'user': '$username',
+        'host': '$new_ip',
+        'password': '$password'
+    }
+    
+    print(json.dumps(config_data, separators=(',', ':')))
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+")
+            
+            if [[ $? -eq 0 ]] && save_password_config "$new_password_config"; then
+                log_success "SSH PASSWORD configuration '$config_name' added for $username@$new_ip"
+                log_warning "Password is stored in plain text - keep config files secure!"
+            else
+                log_error "Failed to save password configuration"
+                return 1
+            fi
+            ;;
+            
+        *)
+            log_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
+    # Sync hosts file and add IP
+    sync_hosts_from_configs
+    log_success "Host $new_ip added to configuration and hosts file"
+}
+
+# Remove host from file
+remove_host_from_file() {
+    echo
+    echo -e "${BOLD}${CYAN}🗑️  Remove Host Configuration${NC}"
+    echo
+    
+    # Get all configurations (not just unique hosts)
+    local all_configs=()
+    
+    # Get SSH configurations
+    local ssh_config=$(load_ssh_config)
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_configs=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            print(f\"{details['host']}|{details['user']}|SSH KEY|{name}\")
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_configs" ]]; then
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    all_configs+=("$line")
+                fi
+            done <<< "$ssh_configs"
+        fi
+    fi
+    
+    # Get password configurations
+    local password_config=$(load_password_config)
+    if [[ "$password_config" != "{}" ]]; then
+        local password_configs=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            print(f\"{details['host']}|{details['user']}|SSH PASSWORD|{name}\")
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_configs" ]]; then
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    all_configs+=("$line")
+                fi
+            done <<< "$password_configs"
+        fi
+    fi
+    
+    if [[ ${#all_configs[@]} -eq 0 ]]; then
+        log_warning "No configurations to remove"
+        return
+    fi
+    
+    echo -e "${BOLD}Select configuration to remove:${NC}"
+    echo
+    printf "%-3s %-15s %-15s %-20s %-25s\n" "No." "Host IP" "User" "Auth Type" "Config Name"
+    echo "─────────────────────────────────────────────────────────────────────────────"
+    
+    local counter=1
+    for config in "${all_configs[@]}"; do
+        local host=$(echo "$config" | cut -d'|' -f1)
+        local user=$(echo "$config" | cut -d'|' -f2)
+        local auth_type=$(echo "$config" | cut -d'|' -f3)
+        local config_name=$(echo "$config" | cut -d'|' -f4)
+        
+        printf "%-3s %-15s %-15s %-20s %-25s\n" "$counter" "$host" "$user" "$auth_type" "$config_name"
+        ((counter++))
+    done
+    echo
+    
+    echo -ne "${CYAN}Enter configuration number to remove [1-${#all_configs[@]}]: ${NC}"
+    read -r choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#all_configs[@]} ]; then
+        local selected_config="${all_configs[$((choice-1))]}"
+        local host=$(echo "$selected_config" | cut -d'|' -f1)
+        local user=$(echo "$selected_config" | cut -d'|' -f2)
+        local auth_type=$(echo "$selected_config" | cut -d'|' -f3)
+        local config_name=$(echo "$selected_config" | cut -d'|' -f4)
+        
+        echo
+        echo -e "${BOLD}Configuration to be removed:${NC}"
+        echo -e "  ${WHITE}Host: ${CYAN}$host${NC}"
+        echo -e "  ${WHITE}User: ${CYAN}$user${NC}"
+        echo -e "  ${WHITE}Type: ${YELLOW}$auth_type${NC}"
+        echo -e "  ${WHITE}Name: ${PURPLE}$config_name${NC}"
+        echo
+        echo -e "${RED}${BOLD}WARNING: This will remove ONLY this specific configuration!${NC}"
+        echo -ne "${RED}Remove configuration '$config_name' for $host? [y/N]: ${NC}"
+        read -r confirm
+        
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            local removal_success=false
+            
+            if [[ "$auth_type" == "SSH KEY" ]]; then
+                # Remove specific SSH configuration
+                local ssh_config=$(load_ssh_config)
+                local new_ssh_config=$(python3 -c "
+import json, sys
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config and '$config_name' in config['saved_keys']:
+        del config['saved_keys']['$config_name']
+        print(f'Removed SSH KEY config: $config_name ($user@$host)', file=sys.stderr)
+        print(json.dumps(config, separators=(',', ':')))
+        sys.exit(0)
+    else:
+        print('Configuration not found', file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(2)
+")
+                
+                if [[ $? -eq 0 ]]; then
+                    if save_ssh_config "$new_ssh_config"; then
+                        log_success "Removed SSH KEY configuration '$config_name' from ssh_keys.json"
+                        removal_success=true
+                    else
+                        log_error "Failed to save updated SSH configuration"
+                    fi
+                fi
+                
+            elif [[ "$auth_type" == "SSH PASSWORD" ]]; then
+                # Remove specific password configuration
+                local password_config=$(load_password_config)
+                local new_password_config=$(python3 -c "
+import json, sys
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config and '$config_name' in config['saved_passwords']:
+        del config['saved_passwords']['$config_name']
+        print(f'Removed SSH PASSWORD config: $config_name ($user@$host)', file=sys.stderr)
+        print(json.dumps(config, separators=(',', ':')))
+        sys.exit(0)
+    else:
+        print('Configuration not found', file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(2)
+")
+                
+                if [[ $? -eq 0 ]]; then
+                    if save_password_config "$new_password_config"; then
+                        log_success "Removed SSH PASSWORD configuration '$config_name' from passwords.json"
+                        removal_success=true
+                    else
+                        log_error "Failed to save updated password configuration"
+                    fi
+                fi
+            fi
+            
+            if [[ "$removal_success" == true ]]; then
+                # Sync hosts file to reflect changes
+                sync_hosts_from_configs
+                log_success "Successfully removed configuration '$config_name' for $host"
+                log_info "Hosts file updated to reflect remaining configurations"
+                
+                # Check if host still has other configurations
+                local remaining_configs=$(find_config_for_ip "$host")
+                if [[ -n "$remaining_configs" ]]; then
+                    log_info "Host $host still has other configurations and remains in hosts file"
+                else
+                    log_info "Host $host had no remaining configurations and was removed from hosts file"
+                fi
+            else
+                log_error "Failed to remove configuration"
+            fi
+        else
+            log_info "Removal cancelled"
+        fi
+    else
+        log_error "Invalid choice"
     fi
 }
 
@@ -847,7 +1970,7 @@ select_from_saved_configurations() {
                 
                 if [[ -n "$name" && -n "$user" && -n "$host" && -n "$key" ]]; then
                     echo -e "  ${GREEN}$total_counter${NC}. ${BOLD}$name${NC}: $user@$host"
-                    echo -e "     ${GRAY}Key: $key${NC}"
+                    echo -e "     ${GREEN}Key: $key${NC}"
                     echo "SSH|$total_counter|$name|$user|$host|$key" >> "$temp_file"
                     ((total_counter++))
                     ((ssh_count++))
@@ -857,7 +1980,7 @@ select_from_saved_configurations() {
     fi
     
     if [[ $ssh_count -eq 0 ]]; then
-        echo -e "  ${GRAY}No saved SSH key configurations found${NC}"
+        echo -e "  ${YELLOW}No saved SSH key configurations found${NC}"
     fi
     echo
     
@@ -882,7 +2005,7 @@ select_from_saved_configurations() {
     fi
     
     if [[ $password_count -eq 0 ]]; then
-        echo -e "  ${GRAY}No saved password configurations found${NC}"
+        echo -e "  ${YELLOW}No saved password configurations found${NC}"
     fi
     echo
     
@@ -955,7 +2078,7 @@ remove_saved_configuration() {
                 
                 if [[ -n "$name" && -n "$user" && -n "$host" && -n "$key" ]]; then
                     echo -e "  ${RED}$total_counter${NC}. ${BOLD}$name${NC}: $user@$host"
-                    echo -e "     ${GRAY}Key: $key${NC}"
+                    echo -e "     ${GREEN}Key: $key${NC}"
                     echo "SSH|$total_counter|$name|$user|$host|$key" >> "$temp_file"
                     ((total_counter++))
                     ((ssh_count++))
@@ -965,7 +2088,7 @@ remove_saved_configuration() {
     fi
     
     if [[ $ssh_count -eq 0 ]]; then
-        echo -e "  ${GRAY}No saved SSH key configurations found${NC}"
+        echo -e "  ${YELLOW}No saved SSH key configurations found${NC}"
     fi
     echo
     
@@ -990,7 +2113,7 @@ remove_saved_configuration() {
     fi
     
     if [[ $password_count -eq 0 ]]; then
-        echo -e "  ${GRAY}No saved password configurations found${NC}"
+        echo -e "  ${YELLOW}No saved password configurations found${NC}"
     fi
     echo
     
@@ -1078,6 +2201,427 @@ except Exception as e:
     return 1
 }
 
+# ═══════════════════════════════════════════════════════════════════
+# CLEANUP FUNCTIONS (Integrated from tunnel_cleanup.sh)
+# ═══════════════════════════════════════════════════════════════════
+
+# Get available hosts for cleanup
+get_available_hosts_cleanup() {
+    local hosts_with_configs=()
+    
+    # Get IPs from SSH configurations
+    local ssh_config=$(load_ssh_config)
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    unique_ips = set()
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    hosts_with_configs+=("$ip")
+                fi
+            done <<< "$ssh_ips"
+        fi
+    fi
+    
+    # Get IPs from password configurations
+    local password_config=$(load_password_config)
+    if [[ "$password_config" != "{}" ]]; then
+        local password_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    unique_ips = set()
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]] && ! printf '%s\n' "${hosts_with_configs[@]}" | grep -q "^$ip$"; then
+                    hosts_with_configs+=("$ip")
+                fi
+            done <<< "$password_ips"
+        fi
+    fi
+    
+    # Sort and return unique IPs that have configurations
+    if [[ ${#hosts_with_configs[@]} -gt 0 ]]; then
+        printf '%s\n' "${hosts_with_configs[@]}" | sort -u
+    fi
+}
+
+# Find matching configuration for an IP
+find_config_for_ip_cleanup() {
+    local target_ip="$1"
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+    
+    # Check SSH configs first
+    if [[ "$ssh_config" != "{}" ]]; then
+        # Extract configurations using python for JSON parsing
+        local ssh_match=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if details.get('host') == '$target_ip':
+                print(f\"ssh:{details['user']}@{details['host']}:{details['key']}:{name}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_match" ]]; then
+            echo "$ssh_match"
+            return 0
+        fi
+    fi
+    
+    # Check password configs
+    if [[ "$password_config" != "{}" ]]; then
+        local password_match=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if details.get('host') == '$target_ip':
+                print(f\"password:{details['user']}@{details['host']}:{details['password']}:{name}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_match" ]]; then
+            echo "$password_match"
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# Set configuration for selected host (for cleanup)
+set_host_config_cleanup() {
+    local target_ip="$1"
+    local config_info=$(find_config_for_ip_cleanup "$target_ip")
+    
+    if [[ -z "$config_info" ]]; then
+        log_error "No valid configuration found for $target_ip"
+        return 1
+    fi
+    
+    REMOTE_HOST="$target_ip"
+    
+    if [[ "$config_info" =~ ^ssh: ]]; then
+        local config_line=$(echo "$config_info" | cut -d':' -f2-)
+        # Parse SSH config line format: user@host:key_path:description
+        REMOTE_USER=$(echo "$config_line" | cut -d'@' -f1)
+        SSH_KEY=$(echo "$config_line" | cut -d':' -f2)
+        USE_PASSWORD=false
+        REMOTE_PASSWORD=""
+        log_info "Using SSH key authentication for $target_ip"
+    elif [[ "$config_info" =~ ^password: ]]; then
+        local config_line=$(echo "$config_info" | cut -d':' -f2-)
+        # Parse password config line format: user@host:password:description
+        REMOTE_USER=$(echo "$config_line" | cut -d'@' -f1)
+        USE_PASSWORD=true
+        REMOTE_PASSWORD=$(echo "$config_line" | cut -d':' -f2)
+        SSH_KEY=""
+        log_info "Using password authentication for $target_ip"
+    fi
+    
+    return 0
+}
+
+# Cleanup local tunnel
+cleanup_local_tunnel() {
+    log_info "🏠 Cleaning up local SSH tunnels on port $LOCAL_PORT..."
+    
+    # Kill SSH processes by pattern first
+    log_info "Killing SSH tunnel processes by pattern..."
+    pkill -f "ssh.*-L.*$LOCAL_PORT:localhost:$REMOTE_PORT" 2>/dev/null
+    pkill -f "ssh.*$LOCAL_PORT.*$REMOTE_HOST" 2>/dev/null
+    sleep 2
+    
+    # Find and kill any remaining processes on the port
+    local tunnel_pids=$(lsof -t -i:$LOCAL_PORT 2>/dev/null)
+    
+    if [[ -n "$tunnel_pids" ]]; then
+        echo -e "${YELLOW}Found remaining processes on port $LOCAL_PORT:${NC}"
+        lsof -i:$LOCAL_PORT 2>/dev/null
+        
+        echo "$tunnel_pids" | while read pid; do
+            if [[ -n "$pid" ]]; then
+                local cmd=$(ps -p $pid -o cmd= 2>/dev/null || echo "Unknown process")
+                log_info "Terminating process $pid: $cmd"
+                kill -9 $pid 2>/dev/null
+            fi
+        done
+        
+        # Verify tunnel is closed
+        sleep 2
+        if ! lsof -Pi :$LOCAL_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+            log_success "Local SSH tunnel terminated successfully"
+        else
+            log_warning "Some processes may still be using port $LOCAL_PORT"
+            lsof -i:$LOCAL_PORT 2>/dev/null || true
+        fi
+    else
+        log_success "No SSH tunnel found on port $LOCAL_PORT"
+    fi
+}
+
+# Cleanup remote server
+cleanup_remote_server() {
+    local target_host="$1"
+    local target_user="$2"
+    local target_ssh_key="$3"
+    local target_use_password="$4"
+    local target_password="$5"
+    
+    log_info "🌐 Cleaning up remote server processes on $target_host..."
+    
+    # Build SSH command based on authentication method
+    local ssh_cmd
+    if [[ "$target_use_password" == "true" ]]; then
+        if ! command -v sshpass &> /dev/null; then
+            log_error "sshpass is required for password authentication but not installed"
+            return 1
+        fi
+        ssh_cmd="sshpass -p '$target_password' ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    else
+        ssh_cmd="ssh -i '$target_ssh_key' -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    fi
+    
+    # Test SSH connection first
+    log_debug "Testing SSH connection to $target_user@$target_host"
+    if ! eval "$ssh_cmd '$target_user@$target_host' 'echo \"SSH connection test successful\"'" >/dev/null 2>&1; then
+        log_error "Cannot connect to remote host: $target_user@$target_host"
+        log_info "Remote cleanup skipped - check SSH connectivity"
+        return 1
+    fi
+    log_debug "SSH connection test passed"
+    
+    # Kill remote server processes - simplified and more robust approach
+    echo "🔍 Looking for remote server processes..."
+    
+    # Execute a simple and robust cleanup command - step by step approach
+    local cleanup_result
+    
+    # Step 1: Basic connection and hostname
+    cleanup_result=$(eval "$ssh_cmd '$target_user@$target_host' 'echo \"Starting cleanup on \$(hostname)...\"'" 2>&1)
+    local step1_exit=$?
+    
+    if [[ $step1_exit -ne 0 ]]; then
+        log_error "Failed initial connection test"
+        echo "Error output: $cleanup_result"
+        return 1
+    fi
+    
+    echo "$cleanup_result"
+    
+    # Step 2: Kill Python processes (one at a time)
+    eval "$ssh_cmd '$target_user@$target_host' 'pkill -f python.*enhanced_http_server'" 2>/dev/null && echo "✅ Killed enhanced_http_server processes" || echo "✅ No enhanced_http_server processes found"
+    
+    eval "$ssh_cmd '$target_user@$target_host' 'pkill -f start_http_server'" 2>/dev/null && echo "✅ Killed start_http_server processes" || echo "✅ No start_http_server processes found"
+    
+    eval "$ssh_cmd '$target_user@$target_host' 'pkill -f \"python.*http.server\"'" 2>/dev/null && echo "✅ Killed http.server processes" || echo "✅ No http.server processes found"
+    
+    eval "$ssh_cmd '$target_user@$target_host' 'pkill -f \"python.*-m.*http\"'" 2>/dev/null && echo "✅ Killed python -m http processes" || echo "✅ No python -m http processes found"
+    
+    # Step 3: Try to kill processes on port 8081 (simple approach)
+    local port_cleanup_result
+    port_cleanup_result=$(eval "$ssh_cmd '$target_user@$target_host' 'if command -v lsof >/dev/null 2>&1; then lsof -t -i:8081 2>/dev/null | xargs -r kill -TERM 2>/dev/null && echo \"Killed processes on port 8081\" || echo \"No processes on port 8081\"; else echo \"lsof not available, skipping port cleanup\"; fi'" 2>/dev/null)
+    
+    if [[ -n "$port_cleanup_result" ]]; then
+        echo "$port_cleanup_result"
+    fi
+    
+    echo "✅ Remote cleanup completed successfully"
+    return 0
+}
+
+# Show cleanup host selection menu
+show_cleanup_host_selection_menu() {
+    local hosts=($(get_available_hosts_cleanup))
+    local CLEANUP_ALL=false
+    
+    if [[ ${#hosts[@]} -eq 0 ]]; then
+        log_error "No hosts configured"
+        log_info "Please configure hosts first using the authentication options"
+        echo -e "${BOLD}${PURPLE}Press Enter to return to main menu...${NC}"
+        read
+        return 1
+    fi
+    
+    echo
+    echo -e "${CYAN}══════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}${WHITE}${BOLD}            🧹 Select Host for Cleanup 🧹           ${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════════════════${NC}"
+    echo
+    echo -e "${BOLD}Cleanup Options:${NC}"
+    echo
+    echo -e "${BOLD}${GREEN}[0]${NC} ${BOLD}Clean up ALL configured hosts${NC}"
+    echo -e "     ${WHITE}🌐 Clean tunnels and servers for all IPs${NC}"
+    echo
+    echo -e "${BOLD}Available Hosts:${NC}"
+    echo
+    
+    local counter=1
+    for host in "${hosts[@]}"; do
+        local user="Unknown"
+        local auth_type="${RED}No Config${NC}"
+        
+        # Check SSH configurations first
+        local ssh_config=$(load_ssh_config)
+        if [[ "$ssh_config" != "{}" ]]; then
+            local ssh_info=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+            
+            if [[ -n "$ssh_info" ]]; then
+                user="$ssh_info"
+                auth_type="${GREEN}SSH KEY${NC}"
+            fi
+        fi
+        
+        # If not found in SSH, check password configurations
+        if [[ "$auth_type" == "${RED}No Config${NC}" ]]; then
+            local password_config=$(load_password_config)
+            if [[ "$password_config" != "{}" ]]; then
+                local password_info=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if details.get('host') == '$host':
+                print(f\"{details['user']}\")
+                exit(0)
+except:
+    pass
+" 2>/dev/null)
+                
+                if [[ -n "$password_info" ]]; then
+                    user="$password_info"
+                    auth_type="${YELLOW}SSH PASSWORD${NC}"
+                fi
+            fi
+        fi
+        
+        echo -e "${BOLD}${GREEN}[$counter]${NC} ${CYAN}$host${NC}"
+        echo -e "     Auth: $auth_type | User: ${WHITE}$user${NC}"
+        echo
+        ((counter++))
+    done
+    
+    echo -e "${BOLD}${RED}[b]${NC} ${BOLD}Back to main menu${NC}"
+    echo
+    
+    while true; do
+        echo -ne "${BOLD}${CYAN}Select option [0-${#hosts[@]}/b]: ${NC}"
+        read -r choice
+        
+        if [[ "$choice" == "0" ]]; then
+            CLEANUP_ALL=true
+            log_info "Selected cleanup for ALL hosts"
+            break
+            
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#hosts[@]} ]; then
+            local selected_host="${hosts[$((choice-1))]}"
+            
+            if set_host_config_cleanup "$selected_host"; then
+                log_success "Selected host: $selected_host"
+                break
+            else
+                log_error "Failed to configure host $selected_host"
+                continue
+            fi
+            
+        elif [[ "$choice" == "b" || "$choice" == "B" ]]; then
+            log_info "Returning to main menu"
+            return 1
+            
+        else
+            log_error "Invalid choice. Please select 0-${#hosts[@]} or 'b' to go back."
+        fi
+    done
+    
+    # Perform cleanup
+    echo
+    cleanup_local_tunnel
+    echo
+    
+    if [[ "$CLEANUP_ALL" == "true" ]]; then
+        # Cleanup all hosts
+        local success_count=0
+        local total_count=${#hosts[@]}
+        
+        log_info "Starting cleanup for $total_count configured hosts..."
+        echo
+        
+        for host in "${hosts[@]}"; do
+            log_info "Processing host: $host"
+            
+            if set_host_config_cleanup "$host"; then
+                cleanup_remote_server "$REMOTE_HOST" "$REMOTE_USER" "$SSH_KEY" "$USE_PASSWORD" "$REMOTE_PASSWORD"
+                if [[ $? -eq 0 ]]; then
+                    ((success_count++))
+                    log_success "Cleanup completed for $host"
+                else
+                    log_warning "Cleanup failed for $host"
+                fi
+            else
+                log_warning "Skipping $host - no valid configuration found"
+            fi
+            echo
+        done
+        
+        log_info "Cleanup summary: $success_count/$total_count hosts processed successfully"
+    else
+        # Cleanup selected host
+        cleanup_remote_server "$REMOTE_HOST" "$REMOTE_USER" "$SSH_KEY" "$USE_PASSWORD" "$REMOTE_PASSWORD"
+    fi
+    
+    echo -e "${GREEN}🎉 Cleanup completed!${NC}"
+    echo -e "${BOLD}${PURPLE}Press Enter to return to main menu...${NC}"
+    read
+    
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════
+
 setup_connection() {
     echo
     echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
@@ -1094,18 +2638,18 @@ setup_connection() {
     
     echo -e "${BOLD}Authentication Options:${NC}"
     echo
-    echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
-    echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+    echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
     echo -e "  ${GREEN}4${NC}. Save new password configuration"
-    echo -e "  ${GREEN}5${NC}. List and select saved configurations"
-    echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+    echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+    echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
     echo
     
     if [[ "$AUTO_YES" == true ]]; then
         choice="1"
-        log_info "Auto-selecting SSH key authentication"
-        if setup_ssh_key_auth "$ssh_config"; then
+        log_info "Auto-selecting saved configurations"
+        if select_from_saved_configurations "$ssh_config" "$password_config"; then
             return 0
         else
             return 1
@@ -1117,26 +2661,6 @@ setup_connection() {
         
         case "$choice" in
             1)
-                if setup_ssh_key_auth "$ssh_config"; then
-                    return 0
-                fi
-                ;;
-            2)
-                if setup_password_auth "$password_config"; then
-                    return 0
-                fi
-                ;;
-            3)
-                if save_new_ssh_config "$ssh_config"; then
-                    ssh_config=$(load_ssh_config)  # Reload after saving
-                fi
-                ;;
-            4)
-                if save_new_password_config "$password_config"; then
-                    password_config=$(load_password_config)  # Reload after saving
-                fi
-                ;;
-            5)
                 if select_from_saved_configurations "$ssh_config" "$password_config"; then
                     return 0
                 else
@@ -1149,16 +2673,44 @@ setup_connection() {
                     show_available_configurations "$ssh_config" "$password_config"
                     echo -e "${BOLD}Authentication Options:${NC}"
                     echo
-                    echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
-                    echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+                    echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
                     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                     echo -e "  ${GREEN}4${NC}. Save new password configuration"
-                    echo -e "  ${GREEN}5${NC}. List and select saved configurations"
-                    echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+                    echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                    echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
                     echo
                 fi
                 ;;
-            6)
+            2)
+                # Run cleanup functionality
+                show_cleanup_host_selection_menu
+                # After cleanup, redisplay the main menu
+                echo
+                ssh_config=$(load_ssh_config)
+                password_config=$(load_password_config)
+                show_available_configurations "$ssh_config" "$password_config"
+                echo -e "${BOLD}Authentication Options:${NC}"
+                echo
+                echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
+                echo -e "  ${GREEN}4${NC}. Save new password configuration"
+                echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                echo
+                ;;
+            3)
+                if save_new_ssh_config "$ssh_config"; then
+                    ssh_config=$(load_ssh_config)  # Reload after saving
+                fi
+                ;;
+            4)
+                if save_new_password_config "$password_config"; then
+                    password_config=$(load_password_config)  # Reload after saving
+                fi
+                ;;
+            5)
                 if remove_saved_configuration "$ssh_config" "$password_config"; then
                     # Reload configurations after deletion
                     ssh_config=$(load_ssh_config)
@@ -1168,12 +2720,32 @@ setup_connection() {
                     show_available_configurations "$ssh_config" "$password_config"
                     echo -e "${BOLD}Authentication Options:${NC}"
                     echo
-                    echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
-                    echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+                    echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
                     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                     echo -e "  ${GREEN}4${NC}. Save new password configuration"
-                    echo -e "  ${GREEN}5${NC}. List and select saved configurations"
-                    echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+                    echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                    echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                    echo
+                fi
+                ;;
+            6)
+                if show_host_selection_menu; then
+                    return 0
+                else
+                    # User went back, reload configurations and redisplay menu
+                    echo
+                    ssh_config=$(load_ssh_config)
+                    password_config=$(load_password_config)
+                    show_available_configurations "$ssh_config" "$password_config"
+                    echo -e "${BOLD}Authentication Options:${NC}"
+                    echo
+                    echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                    echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
+                    echo -e "  ${GREEN}4${NC}. Save new password configuration"
+                    echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                    echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
                     echo
                 fi
                 ;;
@@ -1187,12 +2759,12 @@ setup_connection() {
                 show_available_configurations "$ssh_config" "$password_config"
                 echo -e "${BOLD}Authentication Options:${NC}"
                 echo
-                echo -e "  ${GREEN}1${NC}. Use SSH Key Authentication"
-                echo -e "  ${GREEN}2${NC}. Use Password Authentication"
+                echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
                 echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                 echo -e "  ${GREEN}4${NC}. Save new password configuration"
-                echo -e "  ${GREEN}5${NC}. List and select saved configurations"
-                echo -e "  ${GREEN}6${NC}. Remove saved configuration"
+                echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
                 echo
                 ;;
         esac
@@ -1403,6 +2975,10 @@ except Exception as e:
 
     if [[ $? -eq 0 ]] && save_ssh_config "$new_config"; then
         log_success "SSH configuration '$config_name' saved successfully!"
+        
+        # Add IP to hosts file if it's new
+        add_ip_to_hosts "$new_host"
+        
         return 0
     else
         log_error "Failed to save SSH configuration"
@@ -1488,6 +3064,10 @@ except Exception as e:
     if [[ $? -eq 0 ]] && save_password_config "$new_config"; then
         log_success "Password configuration '$config_name' saved successfully!"
         log_warning "Password is stored in plain text - keep config files secure!"
+        
+        # Add IP to hosts file if it's new
+        add_ip_to_hosts "$new_host"
+        
         return 0
     else
         log_error "Failed to save password configuration"
@@ -1503,7 +3083,7 @@ select_saved_ssh_config() {
     local saved_section=$(echo "$config" | sed -n 's/.*"saved_keys": *{\([^}]*\)}.*/\1/p')
     
     if [[ -z "$saved_section" || "$saved_section" == "" ]]; then
-        echo -e "  ${GRAY}No saved SSH configurations found${NC}"
+        echo -e "  ${YELLOW}No saved SSH configurations found${NC}"
         return 1
     fi
     
@@ -1519,7 +3099,7 @@ select_saved_ssh_config() {
             
             if [[ -n "$name" && -n "$key_path" ]]; then
                 echo -e "  ${GREEN}$counter${NC}. ${BOLD}$name${NC}: $user@$host"
-                echo -e "     Key: $key_path"
+                echo -e "     ${GREEN}Key: $key_path${NC}"
                 echo "$counter|$name|$key_path|$user|$host" >> "$temp_file"
                 ((counter++))
                 echo
@@ -1554,7 +3134,7 @@ select_saved_password_config() {
     
     # Check if saved_passwords exist
     if ! echo "$config" | grep -q '"saved_passwords"'; then
-        echo -e "  ${GRAY}No saved password configurations found${NC}"
+        echo -e "  ${YELLOW}No saved password configurations found${NC}"
         return 1
     fi
     
@@ -1579,7 +3159,7 @@ select_saved_password_config() {
     
     # Check if any configurations were found by checking temp file
     if [[ ! -s "$temp_file" ]]; then
-        echo -e "  ${GRAY}No saved password configurations found${NC}"
+        echo -e "  ${YELLOW}No saved password configurations found${NC}"
         rm -f "$temp_file"
         return 1
     fi
@@ -1612,10 +3192,10 @@ list_saved_configurations() {
     echo
     
     echo -e "${CYAN}SSH Key Configurations:${NC}"
-    select_saved_ssh_config "$ssh_config" || echo -e "  ${GRAY}None found${NC}"
+    select_saved_ssh_config "$ssh_config" || echo -e "  ${YELLOW}None found${NC}"
     
     echo -e "${CYAN}Password Configurations:${NC}"
-    select_saved_password_config "$password_config" || echo -e "  ${GRAY}None found${NC}"
+    select_saved_password_config "$password_config" || echo -e "  ${YELLOW}None found${NC}"
     
     echo
 }
@@ -2014,7 +3594,7 @@ start_remote_server() {
         echo -e "${BOLD}${CYAN}🌍 Server Access URL:${NC}"
         echo -e "  ${GREEN}${BOLD}http://localhost:$LOCAL_PORT/${NC}"
         echo
-        echo -e "${GRAY}Waiting for server to fully initialize...${NC}"
+        echo -e "${WHITE}Waiting for server to fully initialize...${NC}"
         
         sleep 2
         return 0
@@ -2026,7 +3606,7 @@ start_remote_server() {
         log_content=$($ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "cd \"$resolved_remote_dir\" && tail -5 server.log 2>/dev/null || echo 'No log available'" 2>/dev/null)
         if [[ -n "$log_content" && "$log_content" != "No log available" ]]; then
             log_info "Last few lines from server.log:"
-            echo -e "${GRAY}$log_content${NC}"
+            echo -e "${WHITE}$log_content${NC}"
         fi
         return 1
     elif [[ "$server_running" == "UNKNOWN" ]]; then
@@ -2094,12 +3674,12 @@ show_summary() {
     echo -e "1. Navigate to reports via the enhanced file browser"
     echo -e "2. Use ${YELLOW}Ctrl+C${NC} to stop this script (tunnel will remain active)"
     echo
-    echo -e "${GRAY}💡 Tip: Use 'lsof -i :$LOCAL_PORT' to check tunnel status${NC}"
-    echo -e "${GRAY}🛑 To cleanup everything: ./tunnel_cleanup.sh${NC}"
+    echo -e "${CYAN}💡 Tip: Use 'lsof -i :$LOCAL_PORT' to check tunnel status${NC}"
+    echo -e "${CYAN}🛑 To cleanup everything: ./tunnel_cleanup.sh${NC}"
     if [[ "$USE_PASSWORD" == true ]]; then
-        echo -e "${GRAY}📋 SSH Command: sshpass -p [HIDDEN] ssh -L $LOCAL_PORT:localhost:$REMOTE_PORT $REMOTE_USER@$REMOTE_HOST${NC}"
+        echo -e "${CYAN}📋 SSH Command: sshpass -p [HIDDEN] ssh -L $LOCAL_PORT:localhost:$REMOTE_PORT $REMOTE_USER@$REMOTE_HOST${NC}"
     else
-        echo -e "${GRAY}📋 SSH Command: ssh -i $SSH_KEY -L $LOCAL_PORT:localhost:$REMOTE_PORT $REMOTE_USER@$REMOTE_HOST${NC}"
+        echo -e "${CYAN}📋 SSH Command: ssh -i $SSH_KEY -L $LOCAL_PORT:localhost:$REMOTE_PORT $REMOTE_USER@$REMOTE_HOST${NC}"
     fi
     echo
 }
@@ -2159,6 +3739,10 @@ main() {
     print_banner
     
     log_debug "Starting with options: VERBOSE=$VERBOSE, DEBUG=$DEBUG, AUTO_YES=$AUTO_YES"
+    
+    # Step -1: Initialize and sync hosts configuration
+    init_hosts_config
+    sync_hosts_from_configs
     
     # Step 0: Connection Configuration  
     setup_connection
