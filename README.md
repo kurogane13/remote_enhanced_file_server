@@ -38,11 +38,10 @@ chmod +x remote_python_servers_selector.sh
 ## Files
 
 ### Core Files
-- `tunnel_launcher.sh` - **Main script** - Primary executable that handles all functionality including integrated cleanup system
+- `tunnel_launcher.sh` - **Main script** - Primary executable that handles all functionality including integrated cleanup system and direct server startup
 - `enhanced_http_server_complete.py` - **Complete HTTP server** - Full-featured server with video previews, system information, and enhanced UI
-- `enhanced_http_server_new.py` - **Enhanced HTTP server** - Modern server with advanced file browsing capabilities
+- `enhanced_http_server_new.py` - **Enhanced HTTP server** - Modern server with advanced file browsing capabilities  
 - `remote_python_servers_selector.sh` - **Local server selector** - Interactive menu to launch either server locally
-- `start_http_server.sh` - Server launcher script deployed to remote hosts
 
 ### Configuration Files (Auto-created)
 - `~/.tunnel_configs/ssh_keys.json` - Saved SSH key configurations
@@ -444,11 +443,10 @@ The tunnel remains active even after the script exits, allowing continued access
 
 ```
 remote_enhanced_file_server/
-├── tunnel_launcher.sh                    # Main tunnel executable script with integrated cleanup
+├── tunnel_launcher.sh                    # Main tunnel executable script with integrated cleanup and direct server startup
 ├── enhanced_http_server_complete.py     # Complete HTTP server with video previews
 ├── enhanced_http_server_new.py          # Enhanced HTTP server implementation
 ├── remote_python_servers_selector.sh    # Local server selection menu
-├── start_http_server.sh                 # Remote server launcher
 ├── python_remote_servers.desktop        # Desktop launcher file
 └── README.md                            # This file
 
