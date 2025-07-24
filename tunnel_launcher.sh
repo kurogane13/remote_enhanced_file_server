@@ -1254,13 +1254,9 @@ check_local_tunnel_status() {
         
         if [[ "$VERBOSE" == true ]]; then
             echo -e "${BOLD}Process Details:${NC}"
-            lsof -i:$LOCAL_PORT 2>/dev/null | while read line; do
-                if [[ "$line" == *"COMMAND"* ]]; then
-                    echo -e "${CYAN}  $line${NC}"
-                else
-                    echo -e "${WHITE}  $line${NC}"
-                fi
-            done
+            echo -e "${WHITE}  SSH tunnel process is active on port $LOCAL_PORT${NC}"
+            echo -e "${WHITE}  Process count: $(echo "$tunnel_pids" | wc -w)${NC}"
+            # Don't show full lsof output to prevent password exposure
             echo
         fi
         
@@ -2320,22 +2316,23 @@ cleanup_local_tunnel() {
     
     # Kill SSH processes by pattern first
     log_info "Killing SSH tunnel processes by pattern..."
-    pkill -f "ssh.*-L.*$LOCAL_PORT:localhost:$REMOTE_PORT" 2>/dev/null
-    pkill -f "ssh.*$LOCAL_PORT.*$REMOTE_HOST" 2>/dev/null
+    # Kill processes quietly to prevent password exposure in command lines
+    pkill -f "ssh.*-L.*$LOCAL_PORT:localhost:$REMOTE_PORT" >/dev/null 2>&1
+    pkill -f "ssh.*$LOCAL_PORT.*$REMOTE_HOST" >/dev/null 2>&1
     sleep 2
     
     # Find and kill any remaining processes on the port
     local tunnel_pids=$(lsof -t -i:$LOCAL_PORT 2>/dev/null)
     
     if [[ -n "$tunnel_pids" ]]; then
-        echo -e "${YELLOW}Found remaining processes on port $LOCAL_PORT:${NC}"
-        lsof -i:$LOCAL_PORT 2>/dev/null
+        echo -e "${YELLOW}Found remaining processes on port $LOCAL_PORT${NC}"
+        # Don't show lsof output to prevent password exposure in command lines
         
         echo "$tunnel_pids" | while read pid; do
             if [[ -n "$pid" ]]; then
-                local cmd=$(ps -p $pid -o cmd= 2>/dev/null || echo "Unknown process")
-                log_info "Terminating process $pid: $cmd"
-                kill -9 $pid 2>/dev/null
+                # Don't show command line to prevent password exposure
+                log_info "Terminating tunnel process $pid"
+                kill -9 $pid >/dev/null 2>&1
             fi
         done
         
@@ -2345,7 +2342,7 @@ cleanup_local_tunnel() {
             log_success "Local SSH tunnel terminated successfully"
         else
             log_warning "Some processes may still be using port $LOCAL_PORT"
-            lsof -i:$LOCAL_PORT 2>/dev/null || true
+            # Don't show lsof details to prevent password exposure
         fi
     else
         log_success "No SSH tunnel found on port $LOCAL_PORT"
@@ -2581,6 +2578,539 @@ except:
 }
 
 # ═══════════════════════════════════════════════════════════════════
+# IMPORT/EXPORT CONFIGURATION FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════
+
+import_export_configs() {
+    echo
+    echo -e "${CYAN}═══════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}${BOLD}        📤📥 Import/Export Tunnel Configurations 📥📤    ${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════${NC}"
+    echo
+
+    while true; do
+        echo -e "${BOLD}Import/Export Options:${NC}"
+        echo
+        echo -e "  ${GREEN}1${NC}. Export configurations to remote host"
+        echo -e "  ${GREEN}2${NC}. Import configurations from remote host"
+        echo -e "  ${GREEN}3${NC}. Custom export (manual IP/credentials)"
+        echo -e "  ${GREEN}4${NC}. Custom import (manual IP/credentials)"
+        echo -e "  ${RED}b${NC}. Back to main menu"
+        echo
+
+        read -p "$(echo -e "${BOLD}Choose option (1-4/b):${NC} ")" import_export_choice
+
+        case "$import_export_choice" in
+            1)
+                export_configs_to_saved_host
+                ;;
+            2)
+                import_configs_from_saved_host
+                ;;
+            3)
+                export_configs_custom
+                ;;
+            4)
+                import_configs_custom
+                ;;
+            b|B)
+                return 0
+                ;;
+            *)
+                log_warning "Invalid choice. Please select 1-4 or b."
+                echo
+                ;;
+        esac
+    done
+}
+
+export_configs_to_saved_host() {
+    echo
+    echo -e "${BOLD}Export Configurations to Saved Host:${NC}"
+    echo
+
+    # Load both configurations
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+
+    # Show available configurations and let user select a target host
+    if ! select_from_saved_configurations "$ssh_config" "$password_config"; then
+        log_info "Export cancelled"
+        return 1
+    fi
+
+    # Confirm export
+    echo
+    echo -e "${BOLD}${YELLOW}⚠️  EXPORT CONFIRMATION${NC}"
+    echo -e "Target host: ${WHITE}$REMOTE_USER@$REMOTE_HOST${NC}"
+    echo -e "This will copy all configuration files to the remote host."
+    echo -e "Files to export:"
+    echo -e "  • ~/.tunnel_configs/ssh_configs.json"
+    echo -e "  • ~/.tunnel_configs/password_configs.json"
+    echo -e "  • ~/.tunnel_configs/remote_hosts.conf"
+    echo
+    read -p "$(echo -e "${BOLD}Continue with export? (y/n):${NC} ")" confirm_export
+
+    if [[ ! "$confirm_export" =~ ^[Yy] ]]; then
+        log_info "Export cancelled by user"
+        return 1
+    fi
+
+    perform_config_export "$REMOTE_USER" "$REMOTE_HOST" "$SSH_KEY" "$USE_PASSWORD" "$REMOTE_PASSWORD"
+}
+
+import_configs_from_saved_host() {
+    echo
+    echo -e "${BOLD}Import Configurations from Saved Host:${NC}"
+    echo
+
+    # Load both configurations
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+
+    # Show available configurations and let user select a source host
+    if ! select_from_saved_configurations "$ssh_config" "$password_config"; then
+        log_info "Import cancelled"
+        return 1
+    fi
+
+    # Confirm import
+    echo
+    echo -e "${BOLD}${YELLOW}⚠️  IMPORT CONFIRMATION${NC}"
+    echo -e "Source host: ${WHITE}$REMOTE_USER@$REMOTE_HOST${NC}"
+    echo -e "This will copy configuration files from the remote host."
+    echo -e "${RED}WARNING: This will overwrite existing local configurations!${NC}"
+    echo
+    read -p "$(echo -e "${BOLD}Continue with import? (y/n):${NC} ")" confirm_import
+
+    if [[ ! "$confirm_import" =~ ^[Yy] ]]; then
+        log_info "Import cancelled by user"
+        return 1
+    fi
+
+    perform_config_import "$REMOTE_USER" "$REMOTE_HOST" "$SSH_KEY" "$USE_PASSWORD" "$REMOTE_PASSWORD"
+}
+
+export_configs_custom() {
+    echo
+    echo -e "${BOLD}Custom Export Configuration:${NC}"
+    echo
+
+    # Get connection details manually
+    local custom_user custom_host custom_ssh_key custom_password=""
+    local custom_use_password=false
+
+    read -p "$(echo -e "${BOLD}Target username:${NC} ")" custom_user
+    if [[ -z "$custom_user" ]]; then
+        log_warning "Username cannot be empty"
+        return 1
+    fi
+
+    read -p "$(echo -e "${BOLD}Target host/IP:${NC} ")" custom_host
+    if [[ -z "$custom_host" ]]; then
+        log_warning "Host cannot be empty"
+        return 1
+    fi
+
+    echo
+    echo -e "${BOLD}Authentication method:${NC}"
+    echo -e "  ${GREEN}1${NC}. SSH Key"
+    echo -e "  ${GREEN}2${NC}. Password"
+    echo
+    read -p "$(echo -e "${BOLD}Choose method (1-2):${NC} ")" auth_method
+
+    case "$auth_method" in
+        1)
+            read -p "$(echo -e "${BOLD}SSH key file path:${NC} ")" custom_ssh_key
+            if [[ -z "$custom_ssh_key" ]]; then
+                log_warning "SSH key path cannot be empty"
+                return 1
+            fi
+            custom_ssh_key="${custom_ssh_key/#\~/$HOME}"
+            if [[ ! -f "$custom_ssh_key" ]]; then
+                log_error "SSH key file not found: $custom_ssh_key"
+                return 1
+            fi
+            custom_use_password=false
+            ;;
+        2)
+            if ! command -v sshpass &> /dev/null; then
+                log_error "sshpass is required for password authentication but not installed"
+                return 1
+            fi
+            read -s -p "$(echo -e "${BOLD}SSH password:${NC} ")" custom_password
+            echo
+            if [[ -z "$custom_password" ]]; then
+                log_warning "Password cannot be empty"
+                return 1
+            fi
+            custom_use_password=true
+            ;;
+        *)
+            log_warning "Invalid authentication method"
+            return 1
+            ;;
+    esac
+
+    # Validate connection before export
+    log_info "Validating connection to $custom_user@$custom_host..."
+    if ! validate_custom_connection "$custom_user" "$custom_host" "$custom_ssh_key" "$custom_use_password" "$custom_password"; then
+        log_error "Connection validation failed"
+        return 1
+    fi
+
+    perform_config_export "$custom_user" "$custom_host" "$custom_ssh_key" "$custom_use_password" "$custom_password"
+}
+
+import_configs_custom() {
+    echo
+    echo -e "${BOLD}Custom Import Configuration:${NC}"
+    echo
+
+    # Get connection details manually
+    local custom_user custom_host custom_ssh_key custom_password=""
+    local custom_use_password=false
+
+    read -p "$(echo -e "${BOLD}Source username:${NC} ")" custom_user
+    if [[ -z "$custom_user" ]]; then
+        log_warning "Username cannot be empty"
+        return 1
+    fi
+
+    read -p "$(echo -e "${BOLD}Source host/IP:${NC} ")" custom_host
+    if [[ -z "$custom_host" ]]; then
+        log_warning "Host cannot be empty"
+        return 1
+    fi
+
+    echo
+    echo -e "${BOLD}Authentication method:${NC}"
+    echo -e "  ${GREEN}1${NC}. SSH Key"
+    echo -e "  ${GREEN}2${NC}. Password"
+    echo
+    read -p "$(echo -e "${BOLD}Choose method (1-2):${NC} ")" auth_method
+
+    case "$auth_method" in
+        1)
+            read -p "$(echo -e "${BOLD}SSH key file path:${NC} ")" custom_ssh_key
+            if [[ -z "$custom_ssh_key" ]]; then
+                log_warning "SSH key path cannot be empty"
+                return 1
+            fi
+            custom_ssh_key="${custom_ssh_key/#\~/$HOME}"
+            if [[ ! -f "$custom_ssh_key" ]]; then
+                log_error "SSH key file not found: $custom_ssh_key"
+                return 1
+            fi
+            custom_use_password=false
+            ;;
+        2)
+            if ! command -v sshpass &> /dev/null; then
+                log_error "sshpass is required for password authentication but not installed"
+                return 1
+            fi
+            read -s -p "$(echo -e "${BOLD}SSH password:${NC} ")" custom_password
+            echo
+            if [[ -z "$custom_password" ]]; then
+                log_warning "Password cannot be empty"
+                return 1
+            fi
+            custom_use_password=true
+            ;;
+        *)
+            log_warning "Invalid authentication method"
+            return 1
+            ;;
+    esac
+
+    # Validate connection before import
+    log_info "Validating connection to $custom_user@$custom_host..."
+    if ! validate_custom_connection "$custom_user" "$custom_host" "$custom_ssh_key" "$custom_use_password" "$custom_password"; then
+        log_error "Connection validation failed"
+        return 1
+    fi
+
+    # Confirm import with warning
+    echo
+    echo -e "${BOLD}${YELLOW}⚠️  IMPORT CONFIRMATION${NC}"
+    echo -e "Source host: ${WHITE}$custom_user@$custom_host${NC}"
+    echo -e "${RED}WARNING: This will overwrite existing local configurations!${NC}"
+    echo
+    read -p "$(echo -e "${BOLD}Continue with import? (y/n):${NC} ")" confirm_import
+
+    if [[ ! "$confirm_import" =~ ^[Yy] ]]; then
+        log_info "Import cancelled by user"
+        return 1
+    fi
+
+    perform_config_import "$custom_user" "$custom_host" "$custom_ssh_key" "$custom_use_password" "$custom_password"
+}
+
+validate_custom_connection() {
+    local user="$1"
+    local host="$2"
+    local ssh_key="$3"
+    local use_password="$4"
+    local password="$5"
+
+    local ssh_cmd
+    if [[ "$use_password" == "true" ]]; then
+        ssh_cmd="sshpass -p $(printf '%q' "$password") ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no"
+    else
+        ssh_cmd="ssh -i '$ssh_key' -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no"
+    fi
+
+    if eval "$ssh_cmd '$user@$host' 'echo \"Connection test successful\"'" >/dev/null 2>&1; then
+        log_success "Connection validation successful"
+        return 0
+    else
+        log_error "Connection validation failed"
+        return 1
+    fi
+}
+
+perform_config_export() {
+    local user="$1"
+    local host="$2"
+    local ssh_key="$3"
+    local use_password="$4"
+    local password="$5"
+
+    log_info "Starting configuration export to $user@$host..."
+
+    # Build SCP command
+    local scp_cmd
+    if [[ "$use_password" == "true" ]]; then
+        scp_cmd="sshpass -p $(printf '%q' "$password") scp -o StrictHostKeyChecking=no"
+    else
+        scp_cmd="scp -i '$ssh_key' -o StrictHostKeyChecking=no"
+    fi
+
+    # Create remote config directory
+    local ssh_cmd
+    if [[ "$use_password" == "true" ]]; then
+        ssh_cmd="sshpass -p $(printf '%q' "$password") ssh -o StrictHostKeyChecking=no"
+    else
+        ssh_cmd="ssh -i '$ssh_key' -o StrictHostKeyChecking=no"
+    fi
+
+    log_debug "Creating remote configuration directory..."
+    if ! eval "$ssh_cmd '$user@$host' 'mkdir -p ~/.tunnel_configs && chmod 700 ~/.tunnel_configs'" >/dev/null 2>&1; then
+        log_error "Failed to create remote configuration directory"
+        return 1
+    fi
+
+    # Export each configuration file
+    local files_exported=0
+    local total_files=0
+
+    # Get actual config file paths
+    local ssh_config_file="$(get_config_dir)/ssh_configs.json"
+    local password_config_file="$(get_config_dir)/password_configs.json"
+    local hosts_config_file="$HOSTS_CONFIG_FILE"
+    
+    for config_file in "$ssh_config_file" "$password_config_file" "$hosts_config_file"; do
+        ((total_files++))
+        local filename=$(basename "$config_file")
+        
+        if [[ -f "$config_file" ]]; then
+            log_debug "Exporting $filename to remote host..."
+            if eval "$scp_cmd '$config_file' '$user@$host:~/.tunnel_configs/'" >/dev/null 2>&1; then
+                log_success "✅ Exported $filename"
+                ((files_exported++))
+            else
+                log_error "❌ Failed to export $filename"
+            fi
+        else
+            log_warning "⚠️  Local file not found: $filename"
+        fi
+    done
+
+    # Set proper permissions on remote files
+    log_debug "Setting permissions on remote configuration files..."
+    eval "$ssh_cmd '$user@$host' 'chmod 600 ~/.tunnel_configs/*.json ~/.tunnel_configs/*.conf 2>/dev/null || true'" >/dev/null 2>&1
+
+    echo
+    log_info "Export Summary: $files_exported/$total_files files transferred successfully"
+    
+    if [[ $files_exported -gt 0 ]]; then
+        log_success "Configuration export completed successfully!"
+    else
+        log_warning "No files were exported"
+    fi
+
+    echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+    read
+}
+
+perform_config_import() {
+    local user="$1"
+    local host="$2"
+    local ssh_key="$3"
+    local use_password="$4"
+    local password="$5"
+
+    log_info "Starting configuration import from $user@$host..."
+
+    # Build SCP command
+    local scp_cmd
+    if [[ "$use_password" == "true" ]]; then
+        scp_cmd="sshpass -p $(printf '%q' "$password") scp -o StrictHostKeyChecking=no"
+    else
+        scp_cmd="scp -i '$ssh_key' -o StrictHostKeyChecking=no"
+    fi
+
+    # Ensure local config directory exists with proper permissions
+    log_debug "Creating local configuration directory..."
+    mkdir -p "$HOSTS_CONFIG_DIR"
+    chmod 700 "$HOSTS_CONFIG_DIR"
+
+    # Import each configuration file
+    local files_imported=0
+    local total_files=0
+
+    for config_file in "ssh_configs.json" "password_configs.json" "remote_hosts.conf"; do
+        ((total_files++))
+        local remote_path="$user@$host:~/.tunnel_configs/$config_file"
+        local local_path="$HOSTS_CONFIG_DIR/$config_file"
+        
+        log_debug "Importing $config_file from remote host..."
+        if eval "$scp_cmd '$remote_path' '$local_path'" >/dev/null 2>&1; then
+            # Validate imported file
+            if [[ -f "$local_path" ]]; then
+                # Check for duplicates and validate JSON format
+                if validate_imported_config "$local_path" "$config_file"; then
+                    # Set proper permissions on imported file
+                    chmod 600 "$local_path"
+                    log_success "✅ Imported and validated $config_file"
+                    ((files_imported++))
+                else
+                    log_warning "⚠️  Imported $config_file but validation failed"
+                fi
+            else
+                log_error "❌ Failed to import $config_file - file not found after transfer"
+            fi
+        else
+            log_warning "⚠️  Remote file not found or transfer failed: $config_file"
+        fi
+    done
+
+    # Set proper permissions on all config files
+    chmod 600 "$HOSTS_CONFIG_DIR"/*.json "$HOSTS_CONFIG_DIR"/*.conf 2>/dev/null || true
+
+    # Sync hosts file after import
+    log_debug "Synchronizing hosts file after import..."
+    sync_hosts_from_configs
+
+    echo
+    log_info "Import Summary: $files_imported/$total_files files imported successfully"
+    
+    if [[ $files_imported -gt 0 ]]; then
+        log_success "Configuration import completed successfully!"
+        log_info "New configurations are now available in the main menu"
+    else
+        log_warning "No files were imported"
+    fi
+
+    echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+    read
+}
+
+validate_imported_config() {
+    local file_path="$1"
+    local file_name="$2"
+
+    case "$file_name" in
+        "ssh_configs.json"|"password_configs.json")
+            # Validate JSON format
+            if ! python3 -c "import json; json.load(open('$file_path'))" >/dev/null 2>&1; then
+                log_error "Invalid JSON format in $file_name"
+                return 1
+            fi
+            log_debug "JSON validation passed for $file_name"
+            ;;
+        "remote_hosts.conf")
+            # Basic validation for hosts file
+            if [[ ! -r "$file_path" ]]; then
+                log_error "Cannot read $file_name"
+                return 1
+            fi
+            log_debug "Hosts file validation passed for $file_name"
+            ;;
+    esac
+
+    return 0
+}
+
+# Sync hosts file from configurations after import
+sync_hosts_from_configs() {
+    log_debug "Synchronizing hosts file from imported configurations..."
+    
+    # Create hosts file content
+    local hosts_content="# SSH KEY saved connections IPS\n\n"
+    
+    # Add SSH key IPs
+    local ssh_config=$(load_ssh_config)
+    if [[ "$ssh_config" != "{}" ]]; then
+        local ssh_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    unique_ips = set()
+    if 'saved_keys' in config:
+        for name, details in config['saved_keys'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$ssh_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    hosts_content+="$ip\n"
+                fi
+            done <<< "$ssh_ips"
+        fi
+    fi
+    
+    hosts_content+="\n# SSH PASSWORD saved connections IPS\n\n"
+    
+    # Add password IPs
+    local password_config=$(load_password_config)
+    if [[ "$password_config" != "{}" ]]; then
+        local password_ips=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    unique_ips = set()
+    if 'saved_passwords' in config:
+        for name, details in config['saved_passwords'].items():
+            if 'host' in details:
+                unique_ips.add(details['host'])
+    for ip in sorted(unique_ips):
+        print(ip)
+except:
+    pass
+" 2>/dev/null)
+        
+        if [[ -n "$password_ips" ]]; then
+            while IFS= read -r ip; do
+                if [[ -n "$ip" ]]; then
+                    hosts_content+="$ip\n"
+                fi
+            done <<< "$password_ips"
+        fi
+    fi
+    
+    # Write hosts file
+    echo -e "$hosts_content" > "$HOSTS_CONFIG_FILE"
+    log_debug "Hosts file synchronized successfully"
+}
+
+# ═══════════════════════════════════════════════════════════════════
 
 setup_connection() {
     echo
@@ -2599,11 +3129,12 @@ setup_connection() {
     echo -e "${BOLD}Authentication Options:${NC}"
     echo
     echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+    echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
     echo -e "  ${GREEN}4${NC}. Save new password configuration"
     echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
     echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+    echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
     echo
     
     if [[ "$AUTO_YES" == true ]]; then
@@ -2617,7 +3148,7 @@ setup_connection() {
     fi
     
     while true; do
-        read -p "$(echo -e "${BOLD}Choose option (1-6):${NC} ")" choice
+        read -p "$(echo -e "${BOLD}Choose option (1-7):${NC} ")" choice
         
         case "$choice" in
             1)
@@ -2634,11 +3165,12 @@ setup_connection() {
                     echo -e "${BOLD}Authentication Options:${NC}"
                     echo
                     echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                    echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
                     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                     echo -e "  ${GREEN}4${NC}. Save new password configuration"
                     echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
                     echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                    echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
                     echo
                 fi
                 ;;
@@ -2653,11 +3185,12 @@ setup_connection() {
                 echo -e "${BOLD}Authentication Options:${NC}"
                 echo
                 echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-                echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
                 echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                 echo -e "  ${GREEN}4${NC}. Save new password configuration"
                 echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
                 echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
                 echo
                 ;;
             3)
@@ -2681,11 +3214,12 @@ setup_connection() {
                     echo -e "${BOLD}Authentication Options:${NC}"
                     echo
                     echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                    echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
                     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                     echo -e "  ${GREEN}4${NC}. Save new password configuration"
                     echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
                     echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                    echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
                     echo
                 fi
                 ;;
@@ -2701,16 +3235,36 @@ setup_connection() {
                     echo -e "${BOLD}Authentication Options:${NC}"
                     echo
                     echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-                    echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                    echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
                     echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                     echo -e "  ${GREEN}4${NC}. Save new password configuration"
                     echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
                     echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                    echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
                     echo
                 fi
                 ;;
+            7)
+                # Run import/export functionality
+                import_export_configs
+                # After import/export, redisplay the main menu
+                echo
+                ssh_config=$(load_ssh_config)
+                password_config=$(load_password_config)
+                show_available_configurations "$ssh_config" "$password_config"
+                echo -e "${BOLD}Authentication Options:${NC}"
+                echo
+                echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
+                echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
+                echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
+                echo -e "  ${GREEN}4${NC}. Save new password configuration"
+                echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
+                echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
+                echo
+                ;;
             *)
-                log_warning "Invalid choice. Please select 1-6."
+                log_warning "Invalid choice. Please select 1-7."
                 echo
                 # Reload configurations in case they changed during invalid attempts
                 ssh_config=$(load_ssh_config)
@@ -2720,11 +3274,12 @@ setup_connection() {
                 echo -e "${BOLD}Authentication Options:${NC}"
                 echo
                 echo -e "  ${GREEN}1${NC}. List/Run tunnel launcher with saved ssh keys/password configurations"
-                echo -e "  ${GREEN}2${NC}. Run created tunnels and used ports cleanup"
+                echo -e "  ${GREEN}2${NC}. Remove/Clear created tunnels and port sessions"
                 echo -e "  ${GREEN}3${NC}. Save new SSH key configuration"
                 echo -e "  ${GREEN}4${NC}. Save new password configuration"
                 echo -e "  ${GREEN}5${NC}. Remove ssh keys/ssh passwords saved configurations"
                 echo -e "  ${GREEN}6${NC}. Saved ssh keys/ssh password IPs configurations"
+                echo -e "  ${GREEN}7${NC}. Import/export remote tunnel connections configs"
                 echo
                 ;;
         esac
@@ -3165,21 +3720,19 @@ cleanup_local_connections() {
     
     # Kill all SSH processes that match our tunnel pattern first
     log_verbose "Killing SSH tunnel processes by pattern..."
-    pkill -f "ssh.*-L.*$LOCAL_PORT:localhost:$REMOTE_PORT" 2>/dev/null
-    pkill -f "ssh.*$LOCAL_PORT.*$REMOTE_HOST" 2>/dev/null
+    # Kill processes quietly to prevent password exposure in command lines
+    pkill -f "ssh.*-L.*$LOCAL_PORT:localhost:$REMOTE_PORT" >/dev/null 2>&1
+    pkill -f "ssh.*$LOCAL_PORT.*$REMOTE_HOST" >/dev/null 2>&1
     sleep 2
     
     # Clean up any remaining processes on the port - be more aggressive
     local tunnel_pids=$(lsof -t -i:$LOCAL_PORT 2>/dev/null)
     if [[ -n "$tunnel_pids" ]]; then
-        log_verbose "Found remaining processes on port $LOCAL_PORT:"
-        if [[ "$VERBOSE" == true ]]; then
-            lsof -i:$LOCAL_PORT 2>/dev/null
-        fi
+        log_verbose "Found remaining processes on port $LOCAL_PORT"
+        # Don't show process details to prevent password exposure
         
         echo "$tunnel_pids" | while read pid; do
-            local cmd=$(ps -p $pid -o cmd= 2>/dev/null)
-            log_verbose "Process $pid: $cmd"
+            log_verbose "Terminating process $pid"
             
             # Kill any process using our port
             log_verbose "Force killing process (PID: $pid)"
@@ -3192,7 +3745,7 @@ cleanup_local_connections() {
             log_success "Local port $LOCAL_PORT is now free"
         else
             log_warning "Port $LOCAL_PORT may still have some connections:"
-            lsof -i:$LOCAL_PORT 2>/dev/null || true
+            # Don't show lsof details to prevent password exposure
             # Don't return error - tunnel establishment might still work
         fi
     else
@@ -3462,11 +4015,14 @@ check_prerequisites() {
 establish_tunnel() {
     log_info "Establishing SSH tunnel..."
     
-    # First, kill any existing tunnels on the port
+    # First, kill any existing tunnels on the port (suppress output to prevent password exposure)
     local existing_pids=$(lsof -t -i:$LOCAL_PORT 2>/dev/null)
     if [[ -n "$existing_pids" ]]; then
         log_warning "Killing existing processes on port $LOCAL_PORT..."
-        echo "$existing_pids" | xargs kill -9 2>/dev/null
+        # Kill processes quietly to prevent command line exposure
+        for pid in $existing_pids; do
+            kill -9 "$pid" >/dev/null 2>&1
+        done
         sleep 2
     fi
     
@@ -3503,9 +4059,12 @@ establish_tunnel() {
     log_debug "Full tunnel command: $tunnel_cmd"
     
     if [[ "$USE_PASSWORD" == true ]]; then
-        # For password auth, run in background manually
-        eval "$tunnel_cmd" &
+        # For password auth, run in background manually with output suppression
+        # Disable job control to prevent showing command line when process is killed
+        set +m
+        eval "$tunnel_cmd" >/dev/null 2>&1 &
         local tunnel_pid=$!
+        set -m
         log_debug "Started tunnel process with PID: $tunnel_pid"
         
         # Give it a moment to establish or fail
@@ -3564,7 +4123,7 @@ establish_tunnel() {
     # Show diagnostic information
     log_debug "Diagnostic information:"
     log_debug "Active SSH processes: $(ps aux | grep -c '[s]sh.*'$REMOTE_HOST)"
-    log_debug "Processes on port $LOCAL_PORT: $(lsof -i:$LOCAL_PORT 2>/dev/null || echo 'none')"
+    # Don't show process details to prevent password exposure in debug output
     
     return 1
 }
@@ -3608,7 +4167,7 @@ start_remote_server() {
     echo
     
     log_info "Starting Python HTTP server directly on remote host..."
-    log_verbose "Command: cd $resolved_remote_dir && python3 $python_server_file --port $REMOTE_PORT --directory . --host 0.0.0.0"
+    log_verbose "Command: cd $resolved_remote_dir && python3 $python_server_file --port $REMOTE_PORT --directory ~ --host 0.0.0.0"
     
     # Send command to start server in background directly
     log_info "Starting server in background..."
@@ -3616,8 +4175,8 @@ start_remote_server() {
     # Start server with timeout to prevent hanging - run Python server directly
     log_verbose "Starting server (timeout: 3 seconds)..."
     
-    # Start server in background with timeout - direct Python execution
-    timeout 3 $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "cd \"$resolved_remote_dir\" && nohup python3 $python_server_file --port $REMOTE_PORT --directory . --host 0.0.0.0 > server.log 2>&1 &" >/dev/null 2>&1 || true
+    # Start server in background with timeout - serve home directory (~)
+    timeout 3 $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "cd \"$resolved_remote_dir\" && nohup python3 $python_server_file --port $REMOTE_PORT --directory ~ --host 0.0.0.0 > server.log 2>&1 &" >/dev/null 2>&1 || true
     
     # Continue immediately regardless of timeout
     local server_running="RUNNING"
