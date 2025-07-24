@@ -7,6 +7,14 @@
 
 ## Features
 
+### 🆕 **Latest Updates (2025)**
+- **🧹 Integrated Cleanup System**: Complete tunnel and remote server cleanup directly from main menu (Option 2)
+- **🏠 Dynamic Host Management**: Automatic IP synchronization from configurations with plain text storage
+- **🎨 Enhanced UI**: Bright, high-contrast colors for improved readability across all interfaces
+- **⚡ Improved Menu Structure**: Reorganized authentication options for better workflow
+- **🔧 Robust Error Handling**: Better connection testing and step-by-step cleanup processes
+
+### Core Functionality
 - **Dual Authentication Support**: SSH keys and password authentication
 - **Configuration Management**: Save, select, and delete connection configurations
 - **SSH Tunnel Management**: Establishes and manages SSH tunnels automatically
@@ -30,15 +38,16 @@ chmod +x remote_python_servers_selector.sh
 ## Files
 
 ### Core Files
-- `tunnel_launcher.sh` - **Main script** - Primary executable that handles all functionality
+- `tunnel_launcher.sh` - **Main script** - Primary executable that handles all functionality including integrated cleanup system
 - `enhanced_http_server_complete.py` - **Complete HTTP server** - Full-featured server with video previews, system information, and enhanced UI
 - `enhanced_http_server_new.py` - **Enhanced HTTP server** - Modern server with advanced file browsing capabilities
 - `remote_python_servers_selector.sh` - **Local server selector** - Interactive menu to launch either server locally
 - `start_http_server.sh` - Server launcher script deployed to remote hosts
 
 ### Configuration Files (Auto-created)
-- `~/.tunnel_configs/ssh_configs.json` - Saved SSH key configurations
-- `~/.tunnel_configs/password_configs.json` - Saved password configurations
+- `~/.tunnel_configs/ssh_keys.json` - Saved SSH key configurations
+- `~/.tunnel_configs/passwords.json` - Saved password configurations
+- `~/.tunnel_configs/remote_hosts.conf` - Dynamic host management file
 
 ## HTTP Server Variants
 
@@ -224,17 +233,92 @@ cd remote_enhanced_file_server
 ## Configuration Management
 
 ### Authentication Options
-1. **Use SSH Key Authentication** - Connect with existing SSH keys
-2. **Use Password Authentication** - Connect with username/password
-3. **Save new SSH key configuration** - Store SSH connection details
-4. **Save new password configuration** - Store password connection details
-5. **List and select saved configurations** - Choose from saved connections
-6. **Remove saved configuration** - Delete unwanted configurations
+1. **List/Run tunnel launcher with saved ssh keys/password configurations** - Connect using previously saved configurations
+2. **Run created tunnels and used ports cleanup** - Integrated cleanup system for tunnels and remote servers
+3. **Save new SSH key configuration** - Store SSH connection details for reuse
+4. **Save new password configuration** - Store password connection details for reuse
+5. **Remove ssh keys/ssh passwords saved configurations** - Delete unwanted configurations
+6. **Saved ssh keys/ssh password IPs configurations** - Manage host configurations and view saved IPs
+
+## 🧹 Integrated Cleanup System
+
+The tunnel launcher now includes a comprehensive cleanup system accessible via **Option 2** in the main menu. This eliminates the need for a separate cleanup script.
+
+### Cleanup Features
+- **Local Tunnel Cleanup** - Terminates SSH tunnel processes on port 8081
+- **Remote Server Cleanup** - Kills HTTP server processes on remote hosts
+- **Individual Host Cleanup** - Select specific hosts for targeted cleanup
+- **Bulk Cleanup** - Clean all configured hosts simultaneously
+- **Multi-Authentication Support** - Works with both SSH keys and password authentication
+
+### Cleanup Options
+- **[0] Clean up ALL configured hosts** - Comprehensive cleanup across all saved configurations
+- **[1-N] Individual Host Selection** - Target specific hosts for cleanup
+- **[b] Back to main menu** - Return without performing cleanup
+
+### Cleanup Process
+1. **Local SSH Tunnel Termination** - Kills processes using local port 8081
+2. **Remote Process Detection** - Identifies Python HTTP servers and port-bound processes
+3. **Graceful Termination** - Uses SIGTERM followed by SIGKILL if necessary
+4. **Verification** - Confirms successful cleanup and reports results
+5. **Status Reporting** - Provides summary of cleanup operations
+
+### Cleanup Commands Executed
+- Kill Python HTTP servers: `pkill -f python.*enhanced_http_server`
+- Kill server launchers: `pkill -f start_http_server`
+- Kill generic HTTP servers: `pkill -f "python.*http.server"`
+- Kill processes on port 8081: Uses `lsof` or `netstat` for process identification
+
+## 🏠 Dynamic Host Management System
+
+The tunnel launcher includes an advanced host management system that automatically syncs IP addresses from saved configurations.
+
+### Host Management Features
+- **Automatic IP Synchronization** - Extracts unique IPs from SSH key and password configurations
+- **Plain Text Storage** - Hosts stored in `remote_hosts.conf` for easy management
+- **Bidirectional Sync** - JSON configurations and hosts file stay synchronized
+- **Configuration Validation** - Ensures only IPs with valid authentication configs are shown
+- **Duplicate Prevention** - Automatic deduplication of IP addresses
+- **Section Organization** - Groups hosts by authentication type (SSH KEY/SSH PASSWORD)
+
+### Host File Structure
+```
+# SSH KEY saved connections IPS
+
+52.89.199.207
+
+# SSH PASSWORD saved connections IPS
+
+192.168.0.123
+192.168.0.144
+192.168.0.65
+```
+
+### Host Management Options
+- **Add New Configurations** - Create SSH key or password configurations for new hosts
+- **Remove Configurations** - Delete specific configurations without affecting other configs for the same IP
+- **List Configurations** - View all saved configurations with authentication details
+- **Automatic Cleanup** - Remove hosts without valid configurations from the hosts file
+
+## 🎨 Enhanced User Interface
+
+### Color-Coded Display
+- **Bright Green** - SSH key paths and important file locations
+- **White** - User information and configuration details
+- **Cyan** - Tips, commands, and helpful information
+- **Yellow** - Warning messages and "no configuration found" alerts
+- **Red** - Error messages and critical alerts
+
+### Improved Visibility
+- **Eliminated Dark Colors** - All gray and dark colors replaced with bright, readable alternatives
+- **High Contrast** - Enhanced readability in all terminal environments
+- **Consistent Theming** - Unified color scheme across all functions and menus
 
 ### Configuration Storage
-- SSH configurations: `~/.tunnel_configs/ssh_configs.json`
-- Password configurations: `~/.tunnel_configs/password_configs.json`
-- Files are created automatically with proper permissions (600)
+- SSH configurations: `~/.tunnel_configs/ssh_keys.json`
+- Password configurations: `~/.tunnel_configs/passwords.json`
+- Host management: `~/.tunnel_configs/remote_hosts.conf`
+- Files are created automatically with proper permissions (600 for JSON files, 700 for directory)
 
 ## Connection Flow
 
@@ -296,7 +380,7 @@ cd remote_enhanced_file_server
 # 2. Run the script with verbose output
 ./tunnel_launcher.sh -v
 
-# 3. Choose option 5 to select saved configuration
+# 3. Choose option 1 to use saved configuration
 # 4. Pick your saved connection
 # 5. Script automatically connects and deploys
 ```
@@ -325,8 +409,12 @@ pkill -f "ssh.*-L.*8081"
 # Check active tunnels
 lsof -i :8081
 
-# Remove configuration files
+# Remove configuration files (if needed)
 rm -rf ~/.tunnel_configs/
+
+# Use integrated cleanup (recommended)
+./tunnel_launcher.sh
+# Then select option 2 for cleanup
 ```
 
 ## Security Notes
@@ -356,12 +444,16 @@ The tunnel remains active even after the script exits, allowing continued access
 
 ```
 remote_enhanced_file_server/
-├── tunnel_launcher.sh                    # Main tunnel executable script
+├── tunnel_launcher.sh                    # Main tunnel executable script with integrated cleanup
 ├── enhanced_http_server_complete.py     # Complete HTTP server with video previews
 ├── enhanced_http_server_new.py          # Enhanced HTTP server implementation
 ├── remote_python_servers_selector.sh    # Local server selection menu
 ├── start_http_server.sh                 # Remote server launcher
-├── tunnel_cleanup.sh                    # Cleanup utility
 ├── python_remote_servers.desktop        # Desktop launcher file
 └── README.md                            # This file
+
+~/.tunnel_configs/                       # Auto-created configuration directory
+├── ssh_keys.json                        # SSH key configurations
+├── passwords.json                       # Password configurations
+└── remote_hosts.conf                    # Dynamic host management file
 ```
