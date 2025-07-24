@@ -233,11 +233,12 @@ cd remote_enhanced_file_server
 
 ### Authentication Options
 1. **List/Run tunnel launcher with saved ssh keys/password configurations** - Connect using previously saved configurations
-2. **Run created tunnels and used ports cleanup** - Integrated cleanup system for tunnels and remote servers
+2. **Remove/Clear created tunnels and port sessions** - Integrated cleanup system for tunnels and remote servers
 3. **Save new SSH key configuration** - Store SSH connection details for reuse
 4. **Save new password configuration** - Store password connection details for reuse
 5. **Remove ssh keys/ssh passwords saved configurations** - Delete unwanted configurations
 6. **Saved ssh keys/ssh password IPs configurations** - Manage host configurations and view saved IPs
+7. **Import/export remote tunnel connections configs** - Transfer configuration files between hosts
 
 ## 🧹 Integrated Cleanup System
 
@@ -299,6 +300,111 @@ The tunnel launcher includes an advanced host management system that automatical
 - **List Configurations** - View all saved configurations with authentication details
 - **Automatic Cleanup** - Remove hosts without valid configurations from the hosts file
 
+## 📤📥 Configuration Import/Export System
+
+The tunnel launcher includes a comprehensive import/export system accessible via **Option 7** in the main menu. This allows you to transfer configuration files between different machines and environments.
+
+### Import/Export Features
+- **Cross-Platform Configuration Sharing** - Transfer configs between different machines running the tunnel launcher
+- **Dual Authentication Support** - Works with both SSH key and password authentication methods
+- **Automated and Manual Modes** - Use saved configurations or enter custom connection details
+- **Security Validation** - Connection testing and configuration validation before transfers
+- **File Integrity Checking** - JSON format validation and duplicate prevention
+- **Proper Permissions** - Automatic file permission management (600 for config files, 700 for directories)
+
+### Import/Export Options
+
+#### **Option 1: Export configurations to remote host**
+- Uses previously saved connection configurations
+- Exports all configuration files to a remote host
+- Automatic connection validation before transfer
+
+#### **Option 2: Import configurations from remote host**
+- Imports configuration files from a remote host using saved connections
+- **Warning**: Overwrites existing local configurations
+- Automatic host file synchronization after import
+
+#### **Option 3: Custom export (manual IP/credentials)**
+- Manual entry of target host details (IP, username, authentication method)
+- Supports both SSH key and password authentication
+- Connection validation before export
+
+#### **Option 4: Custom import (manual IP/credentials)**
+- Manual entry of source host details (IP, username, authentication method)
+- **Warning**: Overwrites existing local configurations
+- Connection validation before import
+
+### Configuration Files Managed
+- **`~/.tunnel_configs/ssh_configs.json`** - SSH key-based connection configurations
+- **`~/.tunnel_configs/password_configs.json`** - Password-based connection configurations
+- **`~/.tunnel_configs/remote_hosts.conf`** - Dynamic host management file
+
+### Import/Export Process
+
+#### Export Process:
+1. **Connection Selection** - Choose saved configuration or enter custom details
+2. **Authentication Method** - SSH key or password authentication
+3. **Connection Validation** - Test SSH connectivity before transfer
+4. **Export Confirmation** - Review files to be exported
+5. **Remote Directory Creation** - Create `~/.tunnel_configs` on remote host
+6. **File Transfer** - SCP transfer with debugging output
+7. **Permission Setting** - Set proper file permissions on remote files
+8. **Transfer Summary** - Report success/failure for each file
+
+#### Import Process:
+1. **Source Selection** - Choose saved configuration or enter custom details
+2. **Authentication Method** - SSH key or password authentication
+3. **Connection Validation** - Test SSH connectivity before transfer
+4. **Import Confirmation** - **Warning about overwriting local configurations**
+5. **Local Directory Creation** - Ensure `~/.tunnel_configs` exists locally
+6. **File Transfer** - SCP transfer with validation
+7. **Format Validation** - JSON format checking and basic file validation
+8. **Permission Setting** - Set proper file permissions on local files
+9. **Host Synchronization** - Update hosts file based on imported configurations
+10. **Import Summary** - Report success/failure for each file
+
+### Security Features
+- **Connection Testing** - Validates SSH connectivity before any file transfers
+- **File Validation** - JSON format checking for configuration files
+- **Permission Management** - Automatic setting of secure file permissions (600/700)
+- **Debug Logging** - Detailed logging for all SCP transactions
+- **Confirmation Prompts** - User confirmation required for all operations
+- **Error Handling** - Graceful error handling with informative messages
+
+### Usage Examples
+
+#### Export to Saved Host:
+```bash
+# 1. Run tunnel launcher
+./tunnel_launcher.sh
+
+# 2. Choose option 7 (Import/export remote tunnel connections configs)
+# 3. Choose option 1 (Export configurations to remote host)
+# 4. Select from your saved configurations
+# 5. Confirm export operation
+```
+
+#### Custom Import:
+```bash
+# 1. Run tunnel launcher
+./tunnel_launcher.sh
+
+# 2. Choose option 7 (Import/export remote tunnel connections configs)
+# 3. Choose option 4 (Custom import)
+# 4. Enter source host details:
+#    - Username
+#    - Host/IP address
+#    - Authentication method (SSH key or password)
+# 5. Confirm import (WARNING: overwrites local configs)
+```
+
+### Common Use Cases
+- **Multi-Machine Development** - Share configurations between development machines
+- **Team Collaboration** - Distribute connection configs to team members
+- **Environment Migration** - Move configurations between staging/production environments
+- **Backup and Restore** - Create configuration backups on remote systems
+- **Configuration Synchronization** - Keep configurations consistent across multiple hosts
+
 ## 🎨 Enhanced User Interface
 
 ### Color-Coded Display
@@ -314,8 +420,8 @@ The tunnel launcher includes an advanced host management system that automatical
 - **Consistent Theming** - Unified color scheme across all functions and menus
 
 ### Configuration Storage
-- SSH configurations: `~/.tunnel_configs/ssh_keys.json`
-- Password configurations: `~/.tunnel_configs/passwords.json`
+- SSH configurations: `~/.tunnel_configs/ssh_configs.json`
+- Password configurations: `~/.tunnel_configs/password_configs.json`
 - Host management: `~/.tunnel_configs/remote_hosts.conf`
 - Files are created automatically with proper permissions (600 for JSON files, 700 for directory)
 
