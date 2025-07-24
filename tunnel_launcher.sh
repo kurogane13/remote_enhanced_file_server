@@ -36,6 +36,7 @@ REMOTE_USER=""
 REMOTE_HOST=""
 USE_PASSWORD=false
 REMOTE_PASSWORD=""
+SELECTED_SERVER=""
 
 # Options
 VERBOSE=false
@@ -498,10 +499,19 @@ manage_hosts_menu() {
         echo -e "${BOLD}${GREEN}[4]${NC} ${BOLD}Remove Host${NC}"
         echo -e "     ${WHITE}🗑️  Remove host from list${NC}"
         echo
+        echo -e "${BOLD}${GREEN}[5]${NC} ${BOLD}Clear All SSH Key Configurations${NC}"
+        echo -e "     ${WHITE}🔑 Remove all saved SSH key configurations${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[6]${NC} ${BOLD}Clear All Password Configurations${NC}"
+        echo -e "     ${WHITE}🔒 Remove all saved password configurations${NC}"
+        echo
+        echo -e "${BOLD}${GREEN}[7]${NC} ${BOLD}Clear ALL Configurations${NC}"
+        echo -e "     ${WHITE}💥 Remove both SSH keys and password configurations${NC}"
+        echo
         echo -e "${BOLD}${RED}[b]${NC} ${BOLD}Back${NC}"
         echo
         
-        echo -ne "${BOLD}${CYAN}Choose option [1-4/b]: ${NC}"
+        echo -ne "${BOLD}${CYAN}Choose option [1-7/b]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -529,6 +539,24 @@ manage_hosts_menu() {
                 echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
                 read
                 ;;
+            5)
+                clear_all_ssh_configs
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            6)
+                clear_all_password_configs
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
+            7)
+                clear_all_configurations
+                echo
+                echo -e "${BOLD}${PURPLE}Press Enter to continue...${NC}"
+                read
+                ;;
             b|B)
                 return 0
                 ;;
@@ -538,6 +566,443 @@ manage_hosts_menu() {
                 ;;
         esac
     done
+}
+
+# Clear all SSH key configurations
+clear_all_ssh_configs() {
+    echo
+    echo -e "${BOLD}${RED}⚠️  CLEAR ALL SSH KEY CONFIGURATIONS${NC}"
+    echo
+    
+    # Show current SSH configurations
+    local ssh_config=$(load_ssh_config)
+    local ssh_count=0
+    
+    if [[ "$ssh_config" != "{}" ]]; then
+        ssh_count=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        print(len(config['saved_keys']))
+    else:
+        print(0)
+except:
+    print(0)
+" 2>/dev/null)
+    fi
+    
+    if [[ $ssh_count -eq 0 ]]; then
+        echo -e "${YELLOW}No SSH key configurations found${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}The following SSH key configurations will be permanently deleted:${NC}"
+    echo
+    
+    # List SSH configurations that will be deleted
+    python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+    
+    echo
+    echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+    echo -e "${WHITE}Total SSH key configurations to delete: ${RED}$ssh_count${NC}"
+    echo
+    
+    read -p "$(echo -e "${BOLD}Are you sure you want to delete all SSH key configurations? (y/yes/n/no): ${NC}")" confirm
+    if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        # Create empty SSH config
+        local empty_config="{
+            \"default_key\": \"$DEFAULT_SSH_KEY\",
+            \"default_user\": \"$DEFAULT_REMOTE_USER\",
+            \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+            \"saved_keys\": {}
+        }"
+        
+        if save_ssh_config "$empty_config"; then
+            log_success "All SSH key configurations cleared successfully ($ssh_count configurations removed)"
+            # Update hosts file
+            sync_hosts_from_configs
+        else
+            log_error "Failed to clear SSH key configurations"
+        fi
+    else
+        log_info "Operation cancelled"
+    fi
+}
+
+# Clear all password configurations
+clear_all_password_configs() {
+    echo
+    echo -e "${BOLD}${RED}⚠️  CLEAR ALL PASSWORD CONFIGURATIONS${NC}"
+    echo
+    
+    # Show current password configurations
+    local password_config=$(load_password_config)
+    local password_count=0
+    
+    if [[ "$password_config" != "{}" ]]; then
+        password_count=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        print(len(config['saved_passwords']))
+    else:
+        print(0)
+except:
+    print(0)
+" 2>/dev/null)
+    fi
+    
+    if [[ $password_count -eq 0 ]]; then
+        echo -e "${YELLOW}No password configurations found${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}The following password configurations will be permanently deleted:${NC}"
+    echo
+    
+    # List password configurations that will be deleted
+    python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+    
+    echo
+    echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+    echo -e "${WHITE}Total password configurations to delete: ${RED}$password_count${NC}"
+    echo
+    
+    read -p "$(echo -e "${BOLD}Are you sure you want to delete all password configurations? (y/yes/n/no): ${NC}")" confirm
+    if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        # Create empty password config
+        local empty_config="{
+            \"default_user\": \"$DEFAULT_REMOTE_USER\",
+            \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+            \"saved_passwords\": {}
+        }"
+        
+        if save_password_config "$empty_config"; then
+            log_success "All password configurations cleared successfully ($password_count configurations removed)"
+            # Update hosts file
+            sync_hosts_from_configs
+        else
+            log_error "Failed to clear password configurations"
+        fi
+    else
+        log_info "Operation cancelled"
+    fi
+}
+
+# Clear all configurations (provides sub-options)
+clear_all_configurations() {
+    echo
+    echo -e "${BOLD}${RED}💥 CLEAR CONFIGURATIONS${NC}"
+    echo
+    
+    # Show current configuration counts
+    local ssh_config=$(load_ssh_config)
+    local password_config=$(load_password_config)
+    
+    local ssh_count=0
+    local password_count=0
+    
+    if [[ "$ssh_config" != "{}" ]]; then
+        ssh_count=$(python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        print(len(config['saved_keys']))
+    else:
+        print(0)
+except:
+    print(0)
+" 2>/dev/null)
+    fi
+    
+    if [[ "$password_config" != "{}" ]]; then
+        password_count=$(python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        print(len(config['saved_passwords']))
+    else:
+        print(0)
+except:
+    print(0)
+" 2>/dev/null)
+    fi
+    
+    local total_count=$((ssh_count + password_count))
+    
+    if [[ $total_count -eq 0 ]]; then
+        echo -e "${YELLOW}No configurations found to clear${NC}"
+        return 0
+    fi
+    
+    echo -e "${WHITE}Current configurations:${NC}"
+    echo -e "${WHITE}• SSH key configurations: ${CYAN}$ssh_count${NC}"
+    echo -e "${WHITE}• Password configurations: ${CYAN}$password_count${NC}"
+    echo -e "${WHITE}• Total configurations: ${CYAN}$total_count${NC}"
+    echo
+    
+    echo -e "${BOLD}Clear Options:${NC}"
+    echo -e "${BOLD}${RED}[A]${NC} ${BOLD}Clear ALL SSH key configurations${NC} (${ssh_count} total)"
+    echo -e "     ${WHITE}🔑 Remove all saved SSH key configurations${NC}"
+    echo -e "${BOLD}${RED}[P]${NC} ${BOLD}Clear ALL password configurations${NC} (${password_count} total)"
+    echo -e "     ${WHITE}🔒 Remove all saved password configurations${NC}"
+    echo -e "${BOLD}${RED}[B]${NC} ${BOLD}Clear BOTH SSH keys AND passwords${NC} (${total_count} total)"
+    echo -e "     ${WHITE}💥 Remove all SSH keys and password configurations${NC}"
+    echo -e "${BOLD}${GREEN}[C]${NC} ${BOLD}Cancel${NC}"
+    echo
+    
+    read -p "$(echo -e "${BOLD}Choose option (A/P/B/C): ${NC}")" choice
+    
+    case "${choice^^}" in
+        A)
+            if [[ $ssh_count -eq 0 ]]; then
+                log_warning "No SSH key configurations to clear"
+                return 0
+            fi
+            echo
+            echo -e "${BOLD}${RED}⚠️  CLEAR ALL SSH KEY CONFIGURATIONS${NC}"
+            echo -e "${YELLOW}The following SSH key configurations will be permanently deleted:${NC}"
+            echo
+            
+            # List SSH configurations that will be deleted
+            python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+            
+            echo
+            echo -e "${YELLOW}SSH Key Configurations to be deleted:${NC}"
+            python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+            echo
+            echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+            echo -e "${WHITE}Total SSH key configurations to delete: ${RED}$ssh_count${NC}"
+            echo
+            read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+            
+            if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                local empty_ssh_config="{
+                    \"default_key\": \"$DEFAULT_SSH_KEY\",
+                    \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                    \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                    \"saved_keys\": {}
+                }"
+                
+                if save_ssh_config "$empty_ssh_config"; then
+                    log_success "All SSH key configurations cleared successfully ($ssh_count configurations removed)"
+                    sync_hosts_from_configs
+                else
+                    log_error "Failed to clear SSH key configurations"
+                fi
+            else
+                log_info "Operation cancelled"
+            fi
+            ;;
+        P)
+            if [[ $password_count -eq 0 ]]; then
+                log_warning "No password configurations to clear"
+                return 0
+            fi
+            echo
+            echo -e "${BOLD}${RED}⚠️  CLEAR ALL PASSWORD CONFIGURATIONS${NC}"
+            echo -e "${YELLOW}The following password configurations will be permanently deleted:${NC}"
+            echo
+            
+            # List password configurations that will be deleted
+            python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+            
+            echo
+            echo -e "${YELLOW}Password Configurations to be deleted:${NC}"
+            python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+            echo
+            echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+            echo -e "${WHITE}Total password configurations to delete: ${RED}$password_count${NC}"
+            echo
+            read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+            
+            if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                local empty_password_config="{
+                    \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                    \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                    \"saved_passwords\": {}
+                }"
+                
+                if save_password_config "$empty_password_config"; then
+                    log_success "All password configurations cleared successfully ($password_count configurations removed)"
+                    sync_hosts_from_configs
+                else
+                    log_error "Failed to clear password configurations"
+                fi
+            else
+                log_info "Operation cancelled"
+            fi
+            ;;
+        B)
+            echo
+            echo -e "${BOLD}${RED}⚠️  CLEAR ALL CONFIGURATIONS${NC}"
+            echo -e "${YELLOW}The following configurations will be permanently deleted:${NC}"
+            echo
+            
+            # Show SSH key configurations if any
+            if [[ $ssh_count -gt 0 ]]; then
+                echo -e "${CYAN}SSH Key Configurations ($ssh_count):${NC}"
+                python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                echo
+            fi
+            
+            # Show password configurations if any
+            if [[ $password_count -gt 0 ]]; then
+                echo -e "${CYAN}Password Configurations ($password_count):${NC}"
+                python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                echo
+            fi
+            
+            echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+            echo -e "${WHITE}Total configurations to delete: ${RED}$total_count${NC}"
+            echo
+            read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+            
+            if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                local success=true
+                
+                # Clear SSH configurations if any exist
+                if [[ $ssh_count -gt 0 ]]; then
+                    local empty_ssh_config="{
+                        \"default_key\": \"$DEFAULT_SSH_KEY\",
+                        \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                        \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                        \"saved_keys\": {}
+                    }"
+                    
+                    if ! save_ssh_config "$empty_ssh_config"; then
+                        log_error "Failed to clear SSH key configurations"
+                        success=false
+                    fi
+                fi
+                
+                # Clear password configurations if any exist
+                if [[ $password_count -gt 0 ]]; then
+                    local empty_password_config="{
+                        \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                        \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                        \"saved_passwords\": {}
+                    }"
+                    
+                    if ! save_password_config "$empty_password_config"; then
+                        log_error "Failed to clear password configurations"
+                        success=false
+                    fi
+                fi
+                
+                if [[ "$success" == true ]]; then
+                    log_success "All configurations cleared successfully ($total_count configurations removed)"
+                    sync_hosts_from_configs
+                else
+                    log_error "Some configurations failed to clear"
+                fi
+            else
+                log_info "Operation cancelled"
+            fi
+            ;;
+        C)
+            log_info "Operation cancelled"
+            ;;
+        *)
+            log_warning "Invalid choice. Please select A, P, B, or C."
+            ;;
+    esac
 }
 
 # List hosts with their configurations
@@ -1344,6 +1809,11 @@ show_troubleshooting_info() {
 
 # Server Deployment Functions
 deploy_server_files() {
+    # Select server before deployment if not already selected
+    if [[ -z "$SELECTED_SERVER" ]]; then
+        select_http_server
+    fi
+    
     echo
     echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
     echo -e "${WHITE}${BOLD}          📦 Server Deployment to Remote Host 📦         ${NC}"
@@ -1352,9 +1822,8 @@ deploy_server_files() {
     
     log_info "Starting Python server file deployment..."
     
-    # Get current script directory
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local local_server_file="$script_dir/enhanced_http_server_new.py"
+    # Use current working directory and selected server
+    local local_server_file="$PWD/$SELECTED_SERVER"
     
     # Check if local server file exists
     if [[ ! -f "$local_server_file" ]]; then
@@ -2080,9 +2549,230 @@ remove_saved_configuration() {
         return 1
     fi
     
+    # Show delete all options
+    local total_configs=$((ssh_count + password_count))
+    echo -e "${BOLD}Delete All Options:${NC}"
+    echo -e "${BOLD}${RED}[A]${NC} ${BOLD}Delete ALL SSH key configurations${NC} (${ssh_count} total)"
+    echo -e "     ${WHITE}🔑 Remove all saved SSH key configurations${NC}"
+    echo -e "${BOLD}${RED}[P]${NC} ${BOLD}Delete ALL password configurations${NC} (${password_count} total)"
+    echo -e "     ${WHITE}🔒 Remove all saved password configurations${NC}"
+    echo -e "${BOLD}${RED}[B]${NC} ${BOLD}Delete BOTH SSH keys AND passwords${NC} (${total_configs} total)"
+    echo -e "     ${WHITE}💥 Remove all SSH keys and password configurations${NC}"
+    echo
+    
     # Get user selection
-    read -p "$(echo -e "${BOLD}Select configuration number to remove (or press Enter to cancel):${NC} ")" select_num
-    if [[ -n "$select_num" ]] && [[ "$select_num" =~ ^[0-9]+$ ]]; then
+    read -p "$(echo -e "${BOLD}Select configuration number to remove (A/P/B for delete all options, or Enter to cancel):${NC} ")" select_num
+    
+    # Handle delete all options
+    if [[ "$select_num" =~ ^[AaPpBb]$ ]]; then
+        case "${select_num^^}" in
+            A)
+                if [[ $ssh_count -eq 0 ]]; then
+                    log_warning "No SSH key configurations to delete"
+                    rm -f "$temp_file"
+                    return 1
+                fi
+                echo
+                echo -e "${BOLD}${RED}⚠️  DELETE ALL SSH KEY CONFIGURATIONS${NC}"
+                echo -e "${YELLOW}The following SSH key configurations will be permanently deleted:${NC}"
+                echo
+                
+                # List SSH configurations that will be deleted
+                python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                
+                echo
+                echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+                echo -e "${WHITE}Total SSH key configurations to delete: ${RED}$ssh_count${NC}"
+                echo
+                read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+                
+                if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                    local empty_ssh_config="{
+                        \"default_key\": \"$DEFAULT_SSH_KEY\",
+                        \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                        \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                        \"saved_keys\": {}
+                    }"
+                    
+                    if save_ssh_config "$empty_ssh_config"; then
+                        log_success "All SSH key configurations deleted successfully ($ssh_count configurations removed)"
+                        sync_hosts_from_configs
+                        rm -f "$temp_file"
+                        return 0
+                    else
+                        log_error "Failed to delete SSH key configurations"
+                    fi
+                else
+                    log_info "Deletion cancelled"
+                fi
+                rm -f "$temp_file"
+                return 1
+                ;;
+            P)
+                if [[ $password_count -eq 0 ]]; then
+                    log_warning "No password configurations to delete"
+                    rm -f "$temp_file"
+                    return 1
+                fi
+                echo
+                echo -e "${BOLD}${RED}⚠️  DELETE ALL PASSWORD CONFIGURATIONS${NC}"
+                echo -e "${YELLOW}The following password configurations will be permanently deleted:${NC}"
+                echo
+                
+                # List password configurations that will be deleted
+                python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                
+                echo
+                echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+                echo -e "${WHITE}Total password configurations to delete: ${RED}$password_count${NC}"
+                echo
+                read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+                
+                if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                    local empty_password_config="{
+                        \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                        \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                        \"saved_passwords\": {}
+                    }"
+                    
+                    if save_password_config "$empty_password_config"; then
+                        log_success "All password configurations deleted successfully ($password_count configurations removed)"
+                        sync_hosts_from_configs
+                        rm -f "$temp_file"
+                        return 0
+                    else
+                        log_error "Failed to delete password configurations"
+                    fi
+                else
+                    log_info "Deletion cancelled"
+                fi
+                rm -f "$temp_file"
+                return 1
+                ;;
+            B)
+                if [[ $total_configs -eq 0 ]]; then
+                    log_warning "No configurations to delete"
+                    rm -f "$temp_file"
+                    return 1
+                fi
+                echo
+                echo -e "${BOLD}${RED}⚠️  DELETE ALL CONFIGURATIONS${NC}"
+                echo -e "${YELLOW}The following configurations will be permanently deleted:${NC}"
+                echo
+                
+                # Show SSH key configurations if any
+                if [[ $ssh_count -gt 0 ]]; then
+                    echo -e "${CYAN}SSH Key Configurations ($ssh_count):${NC}"
+                    python3 -c "
+import json
+try:
+    config = json.loads('''$ssh_config''')
+    if 'saved_keys' in config:
+        counter = 1
+        for name, details in config['saved_keys'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            print(f'     Key: {details[\"key\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                    echo
+                fi
+                
+                # Show password configurations if any
+                if [[ $password_count -gt 0 ]]; then
+                    echo -e "${CYAN}Password Configurations ($password_count):${NC}"
+                    python3 -c "
+import json
+try:
+    config = json.loads('''$password_config''')
+    if 'saved_passwords' in config:
+        counter = 1
+        for name, details in config['saved_passwords'].items():
+            print(f'  {counter}. {name}: {details[\"user\"]}@{details[\"host\"]}')
+            counter += 1
+except:
+    pass
+" 2>/dev/null
+                    echo
+                fi
+                
+                echo -e "${RED}WARNING: This action cannot be undone!${NC}"
+                echo -e "${WHITE}Total configurations to delete: ${RED}$total_configs${NC}"
+                echo
+                read -p "$(echo -e "${BOLD}Are you sure? (y/yes/n/no):${NC} ")" confirm
+                
+                if [[ "$confirm" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                    local success=true
+                    
+                    # Clear SSH configurations if any exist
+                    if [[ $ssh_count -gt 0 ]]; then
+                        local empty_ssh_config="{
+                            \"default_key\": \"$DEFAULT_SSH_KEY\",
+                            \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                            \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                            \"saved_keys\": {}
+                        }"
+                        
+                        if ! save_ssh_config "$empty_ssh_config"; then
+                            log_error "Failed to clear SSH key configurations"
+                            success=false
+                        fi
+                    fi
+                    
+                    # Clear password configurations if any exist
+                    if [[ $password_count -gt 0 ]]; then
+                        local empty_password_config="{
+                            \"default_user\": \"$DEFAULT_REMOTE_USER\",
+                            \"default_host\": \"$DEFAULT_REMOTE_HOST\",
+                            \"saved_passwords\": {}
+                        }"
+                        
+                        if ! save_password_config "$empty_password_config"; then
+                            log_error "Failed to clear password configurations"
+                            success=false
+                        fi
+                    fi
+                    
+                    if [[ "$success" == true ]]; then
+                        log_success "All configurations deleted successfully ($total_configs configurations removed)"
+                        sync_hosts_from_configs
+                        rm -f "$temp_file"
+                        return 0
+                    else
+                        log_error "Some configurations failed to delete"
+                    fi
+                else
+                    log_info "Deletion cancelled"
+                fi
+                rm -f "$temp_file"
+                return 1
+                ;;
+        esac
+    elif [[ -n "$select_num" ]] && [[ "$select_num" =~ ^[0-9]+$ ]]; then
         # Find the selected configuration
         local selected_line=$(grep "|$select_num|" "$temp_file" | head -1)
         if [[ -n "$selected_line" ]]; then
@@ -2894,11 +3584,13 @@ perform_config_export() {
         ssh_cmd="ssh -i '$ssh_key' -o StrictHostKeyChecking=no"
     fi
 
+    # Ensure remote config directory exists with proper permissions
     log_debug "Creating remote configuration directory..."
     if ! eval "$ssh_cmd '$user@$host' 'mkdir -p ~/.tunnel_configs && chmod 700 ~/.tunnel_configs'" >/dev/null 2>&1; then
         log_error "Failed to create remote configuration directory"
         return 1
     fi
+    log_debug "Remote configuration directory created successfully"
 
     # Export each configuration file
     local files_exported=0
@@ -2929,6 +3621,10 @@ perform_config_export() {
     # Set proper permissions on remote files
     log_debug "Setting permissions on remote configuration files..."
     eval "$ssh_cmd '$user@$host' 'chmod 600 ~/.tunnel_configs/*.json ~/.tunnel_configs/*.conf 2>/dev/null || true'" >/dev/null 2>&1
+    
+    # Ensure the directory and files exist and have proper permissions
+    log_debug "Verifying remote file setup..."
+    eval "$ssh_cmd '$user@$host' 'ls -la ~/.tunnel_configs/ >/dev/null 2>&1 && echo \"Remote configuration directory verified\"'" >/dev/null 2>&1
 
     echo
     log_info "Export Summary: $files_exported/$total_files files transferred successfully"
@@ -3247,8 +3943,10 @@ setup_connection() {
             7)
                 # Run import/export functionality
                 import_export_configs
-                # After import/export, redisplay the main menu
+                # After import/export, reload configurations and sync hosts
                 echo
+                log_debug "Reloading configurations after import/export..."
+                sync_hosts_from_configs  # Ensure hosts file is updated
                 ssh_config=$(load_ssh_config)
                 password_config=$(load_password_config)
                 show_available_configurations "$ssh_config" "$password_config"
@@ -4128,12 +4826,58 @@ establish_tunnel() {
     return 1
 }
 
+# Select which HTTP server to launch
+select_http_server() {
+    echo
+    echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}${BOLD}            🌐 HTTP Server Selection 🌐               ${NC}"
+    echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
+    echo
+    echo -e "${BOLD}Choose which HTTP server to launch:${NC}"
+    echo
+    echo -e "${GREEN}1)${NC} ${BOLD}enhanced_http_server_new.py${NC}"
+    echo -e "   ${WHITE}• Lightweight version with core functionality${NC}"
+    echo -e "   ${WHITE}• Basic file serving and directory browsing${NC}"
+    echo
+    echo -e "${GREEN}2)${NC} ${BOLD}enhanced_http_server_complete.py${NC}"
+    echo -e "   ${WHITE}• Full-featured version with advanced capabilities${NC}"
+    echo -e "   ${WHITE}• Enhanced UI, additional features, and extended functionality${NC}"
+    echo
+    
+    while true; do
+        echo -ne "${CYAN}Enter choice [1-2]: ${NC}"
+        read -r server_choice
+        
+        case $server_choice in
+            1)
+                SELECTED_SERVER="enhanced_http_server_new.py"
+                log_success "Selected: enhanced_http_server_new.py (Lightweight)"
+                break
+                ;;
+            2)
+                SELECTED_SERVER="enhanced_http_server_complete.py"
+                log_success "Selected: enhanced_http_server_complete.py (Full-featured)"
+                break
+                ;;
+            *)
+                log_warning "Invalid choice. Please select 1 or 2."
+                ;;
+        esac
+    done
+    echo
+}
+
 start_remote_server() {
     log_info "Starting remote HTTP server..."
     
+    # Call server selection function if not already selected
+    if [[ -z "$SELECTED_SERVER" ]]; then
+        select_http_server
+    fi
+    
     # Get remote directory from deployed Python server file
     local resolved_remote_dir=$(get_resolved_remote_path "~")
-    local python_server_file="enhanced_http_server_new.py"
+    local python_server_file="$SELECTED_SERVER"
     local remote_python_path="$resolved_remote_dir/$python_server_file"
     
     log_verbose "Remote directory: $resolved_remote_dir"
