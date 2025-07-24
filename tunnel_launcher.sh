@@ -22,7 +22,7 @@ DEFAULT_REMOTE_USER="ubuntu"
 DEFAULT_REMOTE_HOST=""
 LOCAL_PORT=8081
 REMOTE_PORT=8081
-REMOTE_SCRIPT_PATH="~/start_http_server.sh"
+# No longer using external script - Python server started directly
 
 # Host Configuration
 HOSTS_CONFIG_DIR="$HOME/.tunnel_configs"
@@ -1354,26 +1354,19 @@ deploy_server_files() {
     echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
     echo
     
-    log_info "Starting server file deployment process..."
+    log_info "Starting Python server file deployment..."
     
     # Get current script directory
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local local_server_file="$script_dir/enhanced_http_server_new.py"
-    local local_launcher_file="$script_dir/start_http_server.sh"
     
-    # Check if local files exist
+    # Check if local server file exists
     if [[ ! -f "$local_server_file" ]]; then
-        log_error "Local server file not found: $local_server_file"
+        log_error "Local Python server file not found: $local_server_file"
         return 1
     fi
     
-    if [[ ! -f "$local_launcher_file" ]]; then
-        log_error "Local launcher file not found: $local_launcher_file"
-        return 1
-    fi
-    
-    log_verbose "Local server file: $local_server_file"
-    log_verbose "Local launcher file: $local_launcher_file"
+    log_verbose "Local Python server file: $local_server_file"
     
     # Get remote deployment path
     local remote_deploy_path
@@ -1410,39 +1403,33 @@ deploy_server_files() {
     
     log_info "Remote deployment path: $remote_deploy_path"
     
-    # Create remote directory and deploy files
-    if deploy_to_remote "$local_server_file" "$local_launcher_file" "$remote_deploy_path"; then
-        log_success "Server deployment completed successfully!"
-        
-        # Update remote script path in current configuration
-        REMOTE_SCRIPT_PATH="${remote_deploy_path}/start_http_server.sh"
-        log_verbose "Updated remote script path: $REMOTE_SCRIPT_PATH"
-        
+    # Create remote directory and deploy Python server file
+    if deploy_to_remote "$local_server_file" "$remote_deploy_path"; then
+        log_success "Python server deployment completed successfully!"
         return 0
     else
-        log_error "Server deployment failed"
+        log_error "Python server deployment failed"
         return 1
     fi
 }
 
 deploy_to_remote() {
     local local_server_file="$1"
-    local local_launcher_file="$2" 
-    local remote_path="$3"
+    local remote_path="$2"
     
     # Resolve the remote path to actual directory
     local resolved_remote_path=$(get_resolved_remote_path "$remote_path")
     
-    log_info "Deploying files to $REMOTE_USER@$REMOTE_HOST:$resolved_remote_path (original: $remote_path)"
+    log_info "Deploying Python server to $REMOTE_USER@$REMOTE_HOST:$resolved_remote_path (original: $remote_path)"
     
-    # Transfer files to the resolved remote path
-    log_info "Transferring files to remote directory: $resolved_remote_path"
+    # Transfer Python server file to the resolved remote path
+    log_info "Transferring Python server file to remote directory: $resolved_remote_path"
     log_debug "Original remote path: '$remote_path' -> Resolved: '$resolved_remote_path'"
     
     local ssh_cmd=$(get_ssh_cmd)
     local scp_cmd=$(get_scp_cmd)
     
-    # Deploy Python server file
+    # Deploy Python server file only
     log_info "Transferring Python server file (timeout: 10 seconds)..."
     log_debug "SCP command: $scp_cmd \"$local_server_file\" \"$REMOTE_USER@$REMOTE_HOST:$resolved_remote_path/\""
     log_debug "Resolved remote path: $resolved_remote_path"
@@ -1457,26 +1444,12 @@ deploy_to_remote() {
         return 1
     fi
     
-    # Deploy launcher script
-    log_info "Transferring launcher script (timeout: 10 seconds)..."
-    log_debug "SCP command: $scp_cmd \"$local_launcher_file\" \"$REMOTE_USER@$REMOTE_HOST:$resolved_remote_path/\""
-    
-    if timeout 10 $scp_cmd -o ConnectTimeout=5 "$local_launcher_file" "$REMOTE_USER@$REMOTE_HOST:$resolved_remote_path/" 2>/dev/null; then
-        log_success "Launcher script transferred"
-    else
-        log_error "Failed to transfer launcher script"
-        # Try with verbose output for debugging
-        log_verbose "Attempting transfer with error output:"
-        timeout 10 $scp_cmd -o ConnectTimeout=5 "$local_launcher_file" "$REMOTE_USER@$REMOTE_HOST:$resolved_remote_path/" 2>&1 | head -5
-        return 1
-    fi
-    
-    # Make files executable on remote host
+    # Make Python server file executable on remote host
     log_info "Setting file permissions on remote host (timeout: 10 seconds)..."
-    if timeout 10 $ssh_cmd -o ConnectTimeout=5 "$REMOTE_USER@$REMOTE_HOST" "chmod +x \"$resolved_remote_path/enhanced_http_server_new.py\" \"$resolved_remote_path/start_http_server.sh\"" 2>/dev/null; then
+    if timeout 10 $ssh_cmd -o ConnectTimeout=5 "$REMOTE_USER@$REMOTE_HOST" "chmod +x \"$resolved_remote_path/enhanced_http_server_new.py\"" 2>/dev/null; then
         log_success "File permissions set correctly"
     else
-        log_warning "Could not set file permissions (files may still work)"
+        log_warning "Could not set file permissions (Python server may still work)"
     fi
     
     # Verify deployment
@@ -1505,13 +1478,7 @@ verify_remote_deployment() {
         verification_failed=true
     fi
     
-    # Check if launcher script exists and is executable  
-    if $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "test -x \"$remote_path/start_http_server.sh\"" 2>/dev/null; then
-        log_verbose "✓ Launcher script: present and executable"
-    else
-        log_error "✗ Launcher script: missing or not executable"
-        verification_failed=true
-    fi
+    # Note: No longer using external launcher script - Python server started directly
     
     # Check Python availability on remote host
     if $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "command -v python3 &> /dev/null" 2>/dev/null; then
@@ -1552,9 +1519,8 @@ check_remote_server_status() {
     if eval "$ssh_cmd \"$REMOTE_USER@$REMOTE_HOST\" 'test -d \"$resolved_remote_path\"'" 2>/dev/null; then
         log_success "Remote directory exists: $resolved_remote_path"
         
-        # Check for server files - use resolved paths for file checks
+        # Check for Python server file - use resolved paths for file checks
         local server_file="$resolved_remote_path/enhanced_http_server_new.py"
-        local launcher_file="$resolved_remote_path/start_http_server.sh"
         
         local files_present=true
         
@@ -1566,13 +1532,7 @@ check_remote_server_status() {
             files_present=false
         fi
         
-        # Check if launcher script exists (timeout: 5 seconds)
-        if timeout 5 $ssh_cmd -o ConnectTimeout=3 "$REMOTE_USER@$REMOTE_HOST" "test -f $launcher_file" 2>/dev/null; then
-            log_verbose "✓ Launcher script found"
-        else
-            log_warning "✗ Launcher script missing: $launcher_file"
-            files_present=false
-        fi
+        # Note: No longer checking for launcher script - Python server started directly
         
         # Handle file status results
         if [[ "$files_present" != true ]]; then
@@ -3502,49 +3462,125 @@ check_prerequisites() {
 establish_tunnel() {
     log_info "Establishing SSH tunnel..."
     
+    # First, kill any existing tunnels on the port
+    local existing_pids=$(lsof -t -i:$LOCAL_PORT 2>/dev/null)
+    if [[ -n "$existing_pids" ]]; then
+        log_warning "Killing existing processes on port $LOCAL_PORT..."
+        echo "$existing_pids" | xargs kill -9 2>/dev/null
+        sleep 2
+    fi
+    
     local tunnel_cmd
     if [[ "$USE_PASSWORD" == true ]]; then
-        tunnel_cmd="sshpass -p '$REMOTE_PASSWORD' ssh -o StrictHostKeyChecking=no -L $LOCAL_PORT:localhost:$REMOTE_PORT -N -f $REMOTE_USER@$REMOTE_HOST"
-        log_verbose "Command: sshpass -p [HIDDEN] ssh -L $LOCAL_PORT:localhost:$REMOTE_PORT -N -f $REMOTE_USER@$REMOTE_HOST"
+        # For password auth, don't use -f with sshpass as it can cause issues
+        tunnel_cmd="sshpass -p '$REMOTE_PASSWORD' ssh -o StrictHostKeyChecking=no -L $LOCAL_PORT:localhost:$REMOTE_PORT -N $REMOTE_USER@$REMOTE_HOST"
+        log_verbose "Command: sshpass -p [HIDDEN] ssh -L $LOCAL_PORT:localhost:$REMOTE_PORT -N $REMOTE_USER@$REMOTE_HOST"
     else
-        tunnel_cmd="ssh -i '$SSH_KEY' -L $LOCAL_PORT:localhost:$REMOTE_PORT -N -f $REMOTE_USER@$REMOTE_HOST"
+        tunnel_cmd="ssh -i '$SSH_KEY' -o StrictHostKeyChecking=no -L $LOCAL_PORT:localhost:$REMOTE_PORT -N -f $REMOTE_USER@$REMOTE_HOST"
         log_verbose "Command: ssh -i $SSH_KEY -L $LOCAL_PORT:localhost:$REMOTE_PORT -N -f $REMOTE_USER@$REMOTE_HOST"
     fi
     
-    # Create tunnel in background
-    eval "$tunnel_cmd" 2>/dev/null
+    # Test SSH connection first without tunnel
+    log_debug "Testing SSH connection before creating tunnel..."
+    local test_cmd
+    if [[ "$USE_PASSWORD" == true ]]; then
+        test_cmd="sshpass -p '$REMOTE_PASSWORD' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 $REMOTE_USER@$REMOTE_HOST 'echo connection_test_ok'"
+    else
+        test_cmd="ssh -i '$SSH_KEY' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 $REMOTE_USER@$REMOTE_HOST 'echo connection_test_ok'"
+    fi
     
-    if [[ $? -eq 0 ]]; then
-        sleep 3
-        # Verify tunnel is established
-        if lsof -Pi :$LOCAL_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
-            log_success "SSH tunnel established successfully"
-            log_debug "Tunnel PID: $(lsof -t -i:$LOCAL_PORT)"
-            return 0
-        else
-            log_error "Failed to verify tunnel establishment"
-            log_error "Port $LOCAL_PORT may still be in use or SSH connection failed"
+    local test_result
+    test_result=$(eval "$test_cmd" 2>/dev/null)
+    if [[ "$test_result" != "connection_test_ok" ]]; then
+        log_error "SSH connection test failed"
+        log_error "Cannot establish basic SSH connection to $REMOTE_USER@$REMOTE_HOST"
+        return 1
+    fi
+    log_debug "SSH connection test passed"
+    
+    # Create tunnel in background
+    log_debug "Creating SSH tunnel..."
+    log_debug "Full tunnel command: $tunnel_cmd"
+    
+    if [[ "$USE_PASSWORD" == true ]]; then
+        # For password auth, run in background manually
+        eval "$tunnel_cmd" &
+        local tunnel_pid=$!
+        log_debug "Started tunnel process with PID: $tunnel_pid"
+        
+        # Give it a moment to establish or fail
+        sleep 2
+        
+        # Check if the process is still running (didn't fail immediately)
+        if ! kill -0 $tunnel_pid 2>/dev/null; then
+            log_error "SSH tunnel process died immediately"
+            wait $tunnel_pid 2>/dev/null
+            local tunnel_exit_code=$?
+            log_error "Tunnel exit code: $tunnel_exit_code"
             return 1
         fi
     else
-        log_error "Failed to establish SSH tunnel"
-        log_error "Check SSH connectivity and key permissions"
-        return 1
+        # For SSH key auth, use -f flag as before
+        local tunnel_output
+        tunnel_output=$(eval "$tunnel_cmd" 2>&1)
+        local tunnel_exit_code=$?
+        
+        log_debug "Tunnel command exit code: $tunnel_exit_code"
+        if [[ -n "$tunnel_output" ]]; then
+            log_debug "Tunnel command output: $tunnel_output"
+        fi
+        
+        if [[ $tunnel_exit_code -ne 0 ]]; then
+            log_error "SSH tunnel command failed with exit code: $tunnel_exit_code"
+            if [[ -n "$tunnel_output" ]]; then
+                log_error "Error output: $tunnel_output"
+            fi
+            return 1
+        fi
     fi
+    
+    # Wait and verify tunnel is established
+    log_debug "Waiting for tunnel to establish..."
+    local max_attempts=10
+    local attempt=0
+    
+    while [[ $attempt -lt $max_attempts ]]; do
+        sleep 1
+        if lsof -Pi :$LOCAL_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+            log_success "SSH tunnel established successfully"
+            local tunnel_pid=$(lsof -t -i:$LOCAL_PORT 2>/dev/null | head -1)
+            if [[ -n "$tunnel_pid" ]]; then
+                log_debug "Tunnel PID: $tunnel_pid"
+            fi
+            return 0
+        fi
+        ((attempt++))
+        log_debug "Attempt $attempt/$max_attempts - tunnel not ready yet..."
+    done
+    
+    log_error "Failed to verify tunnel establishment after $max_attempts attempts"
+    log_error "Port $LOCAL_PORT is not listening"
+    
+    # Show diagnostic information
+    log_debug "Diagnostic information:"
+    log_debug "Active SSH processes: $(ps aux | grep -c '[s]sh.*'$REMOTE_HOST)"
+    log_debug "Processes on port $LOCAL_PORT: $(lsof -i:$LOCAL_PORT 2>/dev/null || echo 'none')"
+    
+    return 1
 }
 
 start_remote_server() {
     log_info "Starting remote HTTP server..."
     
-    # Get remote directory from script path and resolve it properly
-    local remote_dir="${REMOTE_SCRIPT_PATH%/*}"  # Remove filename, keep directory
-    local resolved_remote_dir=$(get_resolved_remote_path "$remote_dir")
-    local resolved_script_path=$(get_resolved_remote_path "$REMOTE_SCRIPT_PATH")
+    # Get remote directory from deployed Python server file
+    local resolved_remote_dir=$(get_resolved_remote_path "~")
+    local python_server_file="enhanced_http_server_new.py"
+    local remote_python_path="$resolved_remote_dir/$python_server_file"
     
-    log_verbose "Remote directory: $resolved_remote_dir (original: $remote_dir)"
-    log_verbose "Remote script: $resolved_script_path (original: $REMOTE_SCRIPT_PATH)"
+    log_verbose "Remote directory: $resolved_remote_dir"
+    log_verbose "Python server file: $remote_python_path"
     
-    # Validate remote directory and script exist before starting
+    # Validate remote directory and Python server exist before starting
     log_info "Validating remote server setup..."
     local ssh_cmd=$(get_ssh_cmd)
     if ! $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "test -d \"$resolved_remote_dir\"" 2>/dev/null; then
@@ -3552,31 +3588,36 @@ start_remote_server() {
         return 1
     fi
     
-    if ! $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "test -x \"$resolved_script_path\"" 2>/dev/null; then
-        log_error "Remote script not found or not executable: $resolved_script_path"
+    if ! $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "test -f \"$remote_python_path\"" 2>/dev/null; then
+        log_error "Python server file not found: $remote_python_path"
+        return 1
+    fi
+    
+    if ! $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "command -v python3" >/dev/null 2>&1; then
+        log_error "Python 3 is not available on remote host"
         return 1
     fi
     
     log_success "Remote server setup validated"
     
-    # Change to remote directory and start server
+    # Start server directly without external script
     echo
     echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
     echo -e "${WHITE}${BOLD}              🚀 Starting Remote Server 🚀              ${NC}"
     echo -e "${PURPLE}═══════════════════════════════════════════════════════${NC}"
     echo
     
-    log_info "Starting server from remote directory..."
-    log_verbose "Command: cd $remote_dir && echo '1' | bash ./$(basename $REMOTE_SCRIPT_PATH)"
+    log_info "Starting Python HTTP server directly on remote host..."
+    log_verbose "Command: cd $resolved_remote_dir && python3 $python_server_file --port $REMOTE_PORT --directory . --host 0.0.0.0"
     
-    # Send command to start server in background (change to directory first, then run script)
+    # Send command to start server in background directly
     log_info "Starting server in background..."
     
-    # Start server with timeout to prevent hanging
+    # Start server with timeout to prevent hanging - run Python server directly
     log_verbose "Starting server (timeout: 3 seconds)..."
     
-    # Start server in background with timeout - force return after 3 seconds max
-    timeout 3 $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "cd \"$resolved_remote_dir\" && nohup bash ./$(basename $REMOTE_SCRIPT_PATH) > server.log 2>&1 &" >/dev/null 2>&1 || true
+    # Start server in background with timeout - direct Python execution
+    timeout 3 $ssh_cmd "$REMOTE_USER@$REMOTE_HOST" "cd \"$resolved_remote_dir\" && nohup python3 $python_server_file --port $REMOTE_PORT --directory . --host 0.0.0.0 > server.log 2>&1 &" >/dev/null 2>&1 || true
     
     # Continue immediately regardless of timeout
     local server_running="RUNNING"
