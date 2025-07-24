@@ -1168,7 +1168,7 @@ class EnhancedNavigationHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 </div>
                 
-                <div class="directories-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 15px;">
+                <div class="directories-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 15px; width: 100%;">
             """
             
             for dir_info in directories:
@@ -1232,8 +1232,8 @@ class EnhancedNavigationHandler(http.server.SimpleHTTPRequestHandler):
                             font-size: 1.5em;
                             box-shadow: 0 4px 12px rgba(129, 199, 132, 0.3);
                         ">📁</div>
-                        <div style="flex: 1;">
-                            <a href="{dir_path}" style="color: #81c784; text-decoration: none; font-weight: bold; font-size: 1.3em; display: block; line-height: 1.2;">
+                        <div style="flex: 1; min-width: 0; overflow: hidden;">
+                            <a href="{dir_path}" style="color: #81c784; text-decoration: none; font-weight: bold; font-size: 1.3em; display: block; line-height: 1.2; word-break: break-word; overflow-wrap: break-word; max-width: 100%;">
                                 {dir_info['name']}/
                             </a>
                             <div style="display: flex; gap: 8px; margin-top: 4px;">
@@ -1374,7 +1374,7 @@ class EnhancedNavigationHandler(http.server.SimpleHTTPRequestHandler):
                     
                     <!-- Video Info -->
                     <div class="video-info" style="flex: 1; color: #e6e6e6;">
-                        <h3 style="color: #81c784; font-weight: bold; margin: 0 0 10px 0; font-size: 1.3em; word-break: break-word;">{video['name']}</h3>
+                        <h3 style="color: #81c784; font-weight: bold; margin: 0 0 10px 0; font-size: 1.3em; word-break: break-word; overflow-wrap: break-word; line-height: 1.2;">{video['name']}</h3>
                         <p style="color: #aaa; margin: 5px 0; font-size: 0.9em;">Size: {self.format_file_size(video['size'])}</p>
                         <p style="color: #aaa; margin: 5px 0; font-size: 0.9em;">Modified: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(video['modified']))}</p>
                         <p style="color: #aaa; margin: 5px 0; font-size: 0.9em;">Permissions: {video['permissions']} | {'✅ Readable' if video['is_readable'] else '❌ Not Readable'}</p>
@@ -1473,7 +1473,7 @@ class EnhancedNavigationHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 </div>
                 
-                <div class="files-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 15px;">
+                <div class="files-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 15px; width: 100%;">
             """
             
             for file_info in other_files:
@@ -1548,8 +1548,8 @@ class EnhancedNavigationHandler(http.server.SimpleHTTPRequestHandler):
                             font-size: 1.4em;
                             box-shadow: 0 4px 12px rgba(107, 114, 128, 0.3);
                         ">{file_icon}</div>
-                        <div style="flex: 1; min-width: 0;">
-                            <a href="{quote(file_info['name'])}" style="color: #e6e6e6; text-decoration: none; font-weight: bold; font-size: 1.1em; display: block; line-height: 1.2; word-break: break-word;">
+                        <div style="flex: 1; min-width: 0; overflow: hidden;">
+                            <a href="{quote(file_info['name'])}" style="color: #e6e6e6; text-decoration: none; font-weight: bold; font-size: 1.1em; display: block; line-height: 1.2; word-break: break-word; overflow-wrap: break-word; max-width: 100%;">
                                 {file_info['name']}
                             </a>
                             <div style="display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
